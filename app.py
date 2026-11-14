@@ -195,6 +195,100 @@ def run_streamlit_app():
         """
     )
 
+    # DATA UPLOAD: Last section in the left sidebar
+    st.sidebar.markdown("---")
+    st.sidebar.header("📁 Data Upload")
+    uploaded_file = st.sidebar.file_uploader("Upload CSV File", type=["csv"])
+
+    # DATA PROCESSING & ANALYSIS SECTION (Main Page)
+    if uploaded_file is not None:
+        st.markdown("---")
+        st.subheader("📊 Uploaded Inventory Data & Portfolio Analysis")
+        try:
+            # 1. Read CSV into pandas DataFrame
+            df = pd.read_csv(uploaded_file)
+
+            # 2 & 3. Validate required columns
+            required_columns = ["Product", "Category", "Units", "Unit Cost"]
+            missing_cols = [c for c in required_columns if c not in df.columns]
+
+            if missing_cols:
+                st.error(
+                    f"⚠️ Uploaded CSV is missing required column(s): **{', '.join(missing_cols)}**.\n\n"
+                    f"Required columns: **{', '.join(required_columns)}**"
+                )
+            else:
+                # 5. Display number of rows, columns, and column names
+                num_rows, num_cols = df.shape
+                col_names = df.columns.tolist()
+                st.info(
+                    f"**Dataset Overview:** {num_rows:,} rows × {num_cols} columns  |  "
+                    f"**Columns:** {', '.join(col_names)}"
+                )
+
+                # Ensure numeric types using pandas
+                df["Units"] = pd.to_numeric(df["Units"], errors="coerce").fillna(0)
+                df["Unit Cost"] = pd.to_numeric(df["Unit Cost"], errors="coerce").fillna(0.0)
+
+                # DATA ANALYSIS (using pandas and uploaded dataframe)
+                # 1. Calculate total Units
+                total_units = float(df["Units"].sum())
+
+                # 2. Calculate average Unit Cost
+                avg_unit_cost = float(df["Unit Cost"].mean())
+
+                # 3. Identify Product with highest Units
+                idx_highest = df["Units"].idxmax()
+                highest_product_name = str(df.loc[idx_highest, "Product"])
+                highest_product_units = float(df.loc[idx_highest, "Units"])
+
+                # 4. Group data by Category and calculate total Units for each Category
+                units_by_category = df.groupby("Category")["Units"].sum().reset_index()
+                units_by_category.columns = ["Category", "Total Units"]
+                units_by_category = units_by_category.sort_values(by="Total Units", ascending=False)
+
+                # 5. Create new calculated column: Inventory Value = Units * Unit Cost
+                df["Inventory Value"] = df["Units"] * df["Unit Cost"]
+
+                # 6. Calculate total Inventory Value across all products
+                total_inventory_value = float(df["Inventory Value"].sum())
+
+                # RESULTS DISPLAY
+                mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+                with mcol1:
+                    st.metric("Total Units", f"{total_units:,.0f}")
+                with mcol2:
+                    st.metric("Average Unit Cost", f"${avg_unit_cost:,.2f}")
+                with mcol3:
+                    st.metric("Product with Highest Units", f"{highest_product_name}", f"{highest_product_units:,.0f} units")
+                with mcol4:
+                    st.metric("Total Inventory Value", f"${total_inventory_value:,.2f}")
+
+                # Display category breakdown and full dataframe with calculated column
+                col_cat, col_table = st.columns([1, 2])
+                with col_cat:
+                    st.markdown("#### Total Units by Category")
+                    st.dataframe(
+                        units_by_category.style.format({"Total Units": "{:,.0f}"}),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                with col_table:
+                    st.markdown("#### Uploaded Dataframe (with Calculated Inventory Value)")
+                    formatted_df = df.copy()
+                    formatted_display = formatted_df.style.format({
+                        "Units": "{:,.0f}",
+                        "Unit Cost": "${:,.2f}",
+                        "Inventory Value": "${:,.2f}",
+                    })
+                    st.dataframe(formatted_display, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Error reading CSV file: {str(e)}")
+
+        st.markdown("---")
+
     # Input Area
     st.subheader("💬 Ask Your Inventory Question")
     user_query = st.text_area(
