@@ -31,6 +31,37 @@ import numpy as np
 
 
 # ============================================================================
+# Calendar & Time Definition Helpers
+# ============================================================================
+
+def format_time_duration_clarified(days: float) -> str:
+    """
+    Clearly defines days and weeks, ensuring that any fraction or percentage
+    of a week includes the exact number of days for user clarification.
+    Standard operational conversions:
+      - Work week: 5 operating days (50 work weeks = 250 operating days/year)
+      - Calendar week: 7 calendar days (52.14 calendar weeks = 365 calendar days/year)
+    """
+    d_val = float(days)
+    work_wks = d_val / 5.0
+    cal_wks = d_val / 7.0
+    return (
+        f"{d_val:.1f} operating days ("
+        f"{work_wks:.2f} work weeks @ 5 days/wk / "
+        f"{cal_wks:.2f} calendar weeks @ 7 days/wk)"
+    )
+
+
+def format_fractional_week_with_days(weeks: float, days_per_week: float = 5.0) -> str:
+    """
+    Formats a fractional or decimal week including the exact number of days.
+    """
+    w_val = float(weeks)
+    d_val = w_val * days_per_week
+    return f"{w_val:.2f} weeks ({d_val:.1f} days @ {days_per_week:.0f} days/week)"
+
+
+# ============================================================================
 # 1. Economic Order Quantity (EOQ)
 # ============================================================================
 
@@ -80,6 +111,18 @@ class EOQResult:
     @property
     def total_annual_purchase_cost(self) -> Optional[float]:
         return self.annual_purchase_cost
+
+    @property
+    def cycle_time_work_weeks(self) -> float:
+        return round(self.cycle_time_days / 5.0, 2)
+
+    @property
+    def cycle_time_calendar_weeks(self) -> float:
+        return round(self.cycle_time_days / 7.0, 2)
+
+    @property
+    def cycle_time_clarified(self) -> str:
+        return format_time_duration_clarified(self.cycle_time_days)
 
     @property
     def formula_breakdown(self) -> Dict[str, str]:
@@ -163,7 +206,9 @@ def calculate_eoq(
         "i": "Annual holding cost rate as a fraction of unit purchase price (%/year)",
         "Q*": "Economic Order Quantity: the optimal replenishment batch size that minimizes total inventory costs (units)",
         "N": "Order frequency: optimal number of replenishment orders placed per year (orders/year)",
-        "T": "Cycle time: time between consecutive replenishment orders (operating days)",
+        "T": "Cycle time: time between consecutive replenishment orders. Expressed in operating days and weeks (clearly defined: 1 work week = 5 operating days; 1 calendar week = 7 calendar days; fractional weeks always state exact days)",
+        "work_days_per_year": "Annual operating calendar basis (default: 250 work days = 50 five-day work weeks per year)",
+        "Time Units Definition": "1 work week = 5 operating days (standard 250 work days = 50 work weeks per year); 1 calendar week = 7 calendar days (standard 365 calendar days = 52.14 calendar weeks per year). All fractional week metrics include the exact day count.",
         "TC_order": "Total annual ordering cost ($/year)",
         "TC_hold": "Total annual inventory holding cost ($/year)",
         "TC_inv": "Total annual inventory cost (Ordering Cost + Holding Cost) ($/year)",
@@ -178,6 +223,8 @@ def calculate_eoq(
 
     n_orders = d / q_opt
     cycle_days = (q_opt / d) * wd
+    cycle_weeks_work = cycle_days / 5.0
+    cycle_weeks_cal = cycle_days / 7.0
     annual_ordering = n_orders * s
     annual_holding = (q_opt / 2.0) * h
     total_inv = annual_ordering + annual_holding
@@ -188,7 +235,8 @@ def calculate_eoq(
     formulas = {
         "Optimal Order Quantity (Q*)": "Q* = sqrt((2 * D * S) / H)",
         "Orders per Year (N)": "N = D / Q*",
-        "Cycle Time Days (T)": "T = (Q* / D) * work_days_per_year",
+        "Cycle Time Operating Days (T)": "T = (Q* / D) * work_days_per_year",
+        "Cycle Time Weeks (T_weeks)": "T_work_weeks = T / 5 operating days/week | T_cal_weeks = T / 7 calendar days/week (fractional weeks include exact days)",
         "Annual Ordering Cost (TC_order)": "TC_order = (D / Q*) * S = N * S",
         "Annual Holding Cost (TC_hold)": "TC_hold = (Q* / 2) * H",
         "Total Annual Inventory Cost (TC_inv)": "TC_inv = TC_order + TC_hold",
@@ -199,7 +247,11 @@ def calculate_eoq(
     formulas_substituted = {
         "Optimal Order Quantity (Q*)": f"sqrt((2 * {d:,.2f} * {s:,.2f}) / {h:.4f}) = sqrt({two_ds:,.2f} / {h:.4f}) = sqrt({ratio:,.4f}) = {q_opt:,.2f} units",
         "Orders per Year (N)": f"{d:,.2f} / {q_opt:,.2f} = {n_orders:.2f} orders/year",
-        "Cycle Time Days (T)": f"({q_opt:,.2f} / {d:,.2f}) * {wd:,.0f} = {cycle_days:.1f} operating days",
+        "Cycle Time Operating Days (T)": f"({q_opt:,.2f} / {d:,.2f}) * {wd:,.0f} = {cycle_days:.1f} operating days",
+        "Cycle Time Weeks (T_weeks)": (
+            f"{cycle_days:.1f} operating days / 5 days/wk = {cycle_weeks_work:.2f} work weeks ({cycle_days:.1f} operating days) | "
+            f"{cycle_days:.1f} days / 7 days/wk = {cycle_weeks_cal:.2f} calendar weeks ({cycle_days:.1f} calendar days)"
+        ),
         "Annual Ordering Cost (TC_order)": f"({d:,.2f} / {q_opt:,.2f}) * {s:,.2f} = {n_orders:.2f} * ${s:,.2f} = ${annual_ordering:,.2f}",
         "Annual Holding Cost (TC_hold)": f"({q_opt:,.2f} / 2) * {h:.4f} = {q_opt/2:,.2f} * ${h:.4f} = ${annual_holding:,.2f}",
         "Total Annual Inventory Cost (TC_inv)": f"${annual_ordering:,.2f} + ${annual_holding:,.2f} = ${total_inv:,.2f}",
@@ -218,7 +270,10 @@ def calculate_eoq(
         "step_4_optimal_Q_rounded": q_opt,
         "step_5_orders_per_year_N": round(n_orders, 4),
         "step_6_cycle_time_fraction_of_year": round(q_opt / d, 6),
+        "step_6b_cycle_time_fraction_of_year_pct": f"{((q_opt / d) * 100):.2f}% of year ({cycle_days:.1f} operating days)",
         "step_7_cycle_time_days": round(cycle_days, 2),
+        "step_7b_cycle_time_work_weeks": f"{cycle_weeks_work:.2f} work weeks ({cycle_days:.1f} operating days @ 5 days/week)",
+        "step_7c_cycle_time_calendar_weeks": f"{cycle_weeks_cal:.2f} calendar weeks ({cycle_days:.1f} calendar days @ 7 days/week)",
         "step_8_annual_ordering_cost": round(annual_ordering, 2),
         "step_9_annual_holding_cost": round(annual_holding, 2),
         "step_10_cost_difference_ordering_vs_holding": round(abs(annual_ordering - annual_holding), 2),
@@ -233,6 +288,8 @@ def calculate_eoq(
         "optimal_order_quantity_units": "units per replenishment order",
         "orders_per_year": round(n_orders, 2),
         "cycle_time_days": round(cycle_days, 1),
+        "cycle_time_weeks": f"{cycle_weeks_work:.2f} work weeks ({cycle_days:.1f} operating days @ 5 days/wk) / {cycle_weeks_cal:.2f} calendar weeks ({cycle_days:.1f} days @ 7 days/wk)",
+        "cycle_time_detailed": format_time_duration_clarified(cycle_days),
         "annual_ordering_cost": round(annual_ordering, 2),
         "annual_holding_cost": round(annual_holding, 2),
         "total_annual_inventory_cost": round(total_inv, 2),
@@ -275,6 +332,7 @@ def calculate_eoq(
         "Batch replenishment arrives instantaneously as a single complete delivery of Q units.",
         "Stockouts, shortages, and backorders are not permitted.",
         "Unit purchase price, fixed order cost (S), and unit holding cost (H) are constant over time.",
+        "Calendar & Time Units Definition: 1 work week is defined as 5 operating days (standard 250 work days = 50 work weeks per year); 1 calendar week is defined as 7 calendar days (365 days/year = 52.14 calendar weeks). Any result given in a fraction or percentage of a week includes the exact number of days for complete clarity.",
     ]
 
     return EOQResult(
@@ -449,6 +507,7 @@ def calculate_quantity_discount(
         "TC_hold_j": "Annual holding cost for tier j: (Q_j / 2) * H_j ($)",
         "TC_j": "Total annual landed cost for tier j: TC_purchase_j + TC_order_j + TC_hold_j ($)",
         "j*": "Optimal pricing tier that achieves the global minimum total annual cost",
+        "Time Units Definition": "Operating calendar basis: 250 work days per year. 1 work week = 5 operating days; 1 calendar week = 7 calendar days. Any result given in a fraction or percentage of a week includes the exact number of days.",
     }
 
     # 3. Formula
@@ -492,9 +551,12 @@ def calculate_quantity_discount(
         total = purchasing + ordering + holding
 
         max_label = f"{max_q:,.0f}" if max_q is not None else "∞"
+        t_cycle_days = (feasible_q / d) * 250.0
+        t_cycle_work_wks = t_cycle_days / 5.0
+        t_cycle_cal_wks = t_cycle_days / 7.0
         formulas_substituted[f"Tier_{idx+1}_Evaluation ({min_q:,.0f}-{max_label} @ ${p:.2f})"] = (
             f"EOQ_{idx+1} = sqrt((2 * {d:,.0f} * {s:,.2f}) / {h_j:.4f}) = {raw_eoq:,.2f} units -> "
-            f"Feasible Q_{idx+1} = {feasible_q:,.0f} units. "
+            f"Feasible Q_{idx+1} = {feasible_q:,.0f} units (Order Cycle: {t_cycle_days:.1f} operating days / {t_cycle_work_wks:.2f} work weeks @ 5 days/wk). "
             f"TC_{idx+1} = (${purchasing:,.2f} purchase) + (${ordering:,.2f} order) + (${holding:,.2f} hold) = ${total:,.2f}"
         )
 
@@ -516,6 +578,9 @@ def calculate_quantity_discount(
         )
 
     best_tier = min(tier_details, key=lambda t: t.total_annual_cost)
+    opt_cycle_days = (best_tier.feasible_quantity / d) * 250.0
+    opt_cycle_work_wks = opt_cycle_days / 5.0
+    opt_cycle_cal_wks = opt_cycle_days / 7.0
 
     # 5. Intermediate Calculations
     intermediate_calcs = {
@@ -524,6 +589,9 @@ def calculate_quantity_discount(
         "evaluated_tier_details": [asdict(t) for t in tier_details],
         "all_tier_total_costs": {f"Tier_{t.tier_index+1}": t.total_annual_cost for t in tier_details},
         "optimal_tier_index": best_tier.tier_index,
+        "optimal_tier_cycle_days": round(opt_cycle_days, 2),
+        "optimal_tier_cycle_work_weeks": f"{opt_cycle_work_wks:.2f} work weeks ({opt_cycle_days:.1f} operating days @ 5 days/week)",
+        "optimal_tier_cycle_calendar_weeks": f"{opt_cycle_cal_wks:.2f} calendar weeks ({opt_cycle_days:.1f} calendar days @ 7 days/week)",
         "savings_vs_base_tier": round(tier_details[0].total_annual_cost - best_tier.total_annual_cost, 2),
         "cost_savings_vs_base_tier": round(tier_details[0].total_annual_cost - best_tier.total_annual_cost, 2),
     }
@@ -534,6 +602,7 @@ def calculate_quantity_discount(
         "optimal_tier_label": f"Tier {best_tier.tier_index + 1}",
         "optimal_order_quantity": best_tier.feasible_quantity,
         "optimal_unit_price": best_tier.unit_price,
+        "order_cycle_time": f"{opt_cycle_days:.1f} operating days ({opt_cycle_work_wks:.2f} work weeks @ 5 days/wk / {opt_cycle_cal_wks:.2f} calendar weeks @ 7 days/wk)",
         "minimum_total_annual_cost": best_tier.total_annual_cost,
         "annual_purchasing_cost": best_tier.annual_purchasing_cost,
         "annual_ordering_cost": best_tier.annual_ordering_cost,
@@ -574,6 +643,7 @@ def calculate_quantity_discount(
         f"Holding cost is {'constant per unit across all brackets' if holding_type == 'fixed' else 'proportional to unit purchase price (H = i * P)'}.",
         "Demand rate is deterministic and constant over the entire annual planning horizon.",
         "Supplier can fulfill orders of any quantity without capacity caps or lead time penalties.",
+        "Time Units & Calendar Definition: 1 work week is defined as 5 operating days (50 work weeks = 250 operating days per year); 1 calendar week is defined as 7 calendar days. Any fractional week metric explicitly states the exact number of days.",
     ]
 
     return QuantityDiscountResult(
@@ -722,7 +792,7 @@ def calculate_rop(
     # 2. Variable Definitions
     variable_definitions = {
         "d": "Average demand rate per unit time period (e.g., daily or weekly demand)",
-        "L": "Average supplier replenishment lead time in periods",
+        "L": "Average supplier replenishment lead time. Defined in days and weeks (1 work week = 5 operating days; 1 calendar week = 7 calendar days; fractional weeks state exact days)",
         "sigma_d": "Standard deviation of demand per period",
         "sigma_L": "Standard deviation of lead time in periods",
         "CSL": "Cycle Service Level: target probability of not stocking out during a replenishment lead time cycle",
@@ -731,6 +801,7 @@ def calculate_rop(
         "sigma_LT": "Combined standard deviation of demand during lead time (units)",
         "SS": "Safety Stock: buffer inventory held to mitigate demand and lead time volatility (units)",
         "ROP": "Reorder Point: inventory level that triggers placement of a new replenishment order (units)",
+        "Time Units Definition": "1 work week = 5 operating days; 1 calendar week = 7 calendar days. Demand rate and replenishment lead time must be in identical time units (e.g., daily demand with days of lead time). Any result given in a fraction or percentage of a week includes the exact number of days.",
     }
 
     # Identify Case & Solve
@@ -805,8 +876,13 @@ def calculate_rop(
 
     # 4. Formula with Substituted Values
     csl_label = f"{csl*100:.2f}%" if csl is not None else "N/A"
+    l_work_wks = l_mean / 5.0
+    l_cal_wks = l_mean / 7.0
     formulas_substituted = {
-        "Expected Demand during Lead Time (DDLT)": f"{d:,.2f} * {l_mean:,.2f} = {ddlt:,.2f} units",
+        "Expected Demand during Lead Time (DDLT)": (
+            f"{d:,.2f} * {l_mean:,.2f} days "
+            f"({l_work_wks:.2f} work wks @ 5 days/wk / {l_cal_wks:.2f} cal wks @ 7 days/wk) = {ddlt:,.2f} units"
+        ),
         "Lead Time Demand Std Dev (sigma_LT)": subst_sigma,
         "Safety Factor (z)": f"norm.ppf({csl_label}) = {z:.4f}" if csl else "0.0000",
         "Safety Stock (SS)": f"{z:.4f} * {sigma_lt:,.2f} = {ss:,.2f} units",
@@ -817,6 +893,9 @@ def calculate_rop(
     intermediate_calcs = {
         "case_type": case_type,
         "expected_lead_time_demand_DDLT": round(ddlt, 2),
+        "lead_time_duration_days": round(l_mean, 2),
+        "lead_time_work_weeks": f"{l_work_wks:.2f} work weeks ({l_mean:.1f} operating days @ 5 days/wk)",
+        "lead_time_calendar_weeks": f"{l_cal_wks:.2f} calendar weeks ({l_mean:.1f} calendar days @ 7 days/wk)",
         "demand_variance_contribution (L * sigma_d^2)": round(term_demand_var, 4),
         "lead_time_variance_contribution (d^2 * sigma_L^2)": round(term_lead_var, 4),
         "demand_variance_contribution_L_sigma_d_sq": round(term_demand_var, 4),
@@ -836,6 +915,8 @@ def calculate_rop(
         "safety_stock": round(ss, 2),
         "safety_stock_units": "units reserved as safety buffer",
         "expected_lead_time_demand": round(ddlt, 2),
+        "lead_time_days": round(l_mean, 2),
+        "lead_time_clarification": f"{l_mean:.1f} days ({l_work_wks:.2f} work weeks @ 5 days/wk / {l_cal_wks:.2f} calendar weeks @ 7 days/wk)",
         "cycle_service_level": f"{csl*100:.1f}%" if csl is not None else "100.0% (Deterministic)",
     }
 
@@ -870,6 +951,7 @@ def calculate_rop(
         "Demand in each time period is independent and identically distributed.",
         f"Demand during lead time follows a normal distribution ({'active' if (has_var_d or has_var_l) else 'deterministic'}).",
         "Stockouts occurring during the replenishment lead time are backordered and filled when the batch arrives.",
+        "Time Units & Calendar Definition: 1 work week is defined as 5 operating days; 1 calendar week is defined as 7 calendar days. Lead time and demand rates must use consistent time units. Any result given in a fraction or percentage of a week includes the exact number of days.",
     ]
 
     return ROPResult(
@@ -1036,9 +1118,9 @@ def calculate_periodic_review(
 
     # 2. Variable Definitions
     variable_definitions = {
-        "R": "Review period interval: time between consecutive inventory reviews (periods)",
-        "L": "Supplier replenishment lead time (periods)",
-        "R + L": "Total protection period: time interval across which inventory must buffer demand until next delivery",
+        "R": "Review period interval: time between consecutive inventory reviews. Defined in days and weeks (1 work week = 5 operating days; 1 calendar week = 7 calendar days; fractional weeks state exact days)",
+        "L": "Supplier replenishment lead time. Defined in days and weeks (1 work week = 5 operating days; 1 calendar week = 7 calendar days; fractional weeks state exact days)",
+        "R + L": "Total protection period: time interval across which inventory must buffer demand until next delivery. Defined in days and weeks (any fractional week includes exact days)",
         "d": "Average customer demand rate per period (units/period)",
         "sigma_d": "Standard deviation of demand per period",
         "sigma_prot": "Standard deviation of demand during the protection period: sigma_d * sqrt(R + L)",
@@ -1048,11 +1130,18 @@ def calculate_periodic_review(
         "Target Inventory (M)": "Order-Up-To Level (Base Stock): expected protection period demand + Safety Stock (units)",
         "Inventory Position (I)": "Current net inventory position: On-Hand + On-Order - Backorders (units)",
         "Order Quantity (Q)": "Recommended replenishment order placed right now: max(0, Target Inventory - Inventory Position)",
+        "Time Units Definition": "1 work week = 5 operating days; 1 calendar week = 7 calendar days. Any result given in a fraction or percentage of a week includes the number of days for clarification.",
     }
 
     # Deterministic Calculations
     prot_period = r + l
     demand_prot = d * prot_period
+    r_cal_wks = r / 7.0
+    r_work_wks = r / 5.0
+    l_cal_wks = l / 7.0
+    l_work_wks = l / 5.0
+    prot_cal_wks = prot_period / 7.0
+    prot_work_wks = prot_period / 5.0
 
     if sig_d > 0:
         if z_score is not None:
@@ -1084,7 +1173,7 @@ def calculate_periodic_review(
 
     # 3. Formula
     formulas = {
-        "Protection Period (R + L)": "Protection Period = R + L",
+        "Protection Period (R + L)": "Protection Period = R + L (in days; fractional weeks include exact days)",
         "Demand during Protection Period": "Demand_prot = d * (R + L)",
         "Protection Period Std Dev (sigma_prot)": "sigma_prot = sigma_d * sqrt(R + L)",
         "Safety Stock (SS)": "SS = z * sigma_prot",
@@ -1095,7 +1184,7 @@ def calculate_periodic_review(
     # 4. Formula with Substituted Values
     csl_str = f"{csl*100:.1f}%" if csl is not None else "100.0% (Deterministic)"
     formulas_substituted = {
-        "Protection Period (R + L)": f"{r:,.1f} + {l:,.1f} = {prot_period:,.1f} periods",
+        "Protection Period (R + L)": f"{r:,.1f} days + {l:,.1f} days = {prot_period:,.1f} days ({prot_cal_wks:.2f} calendar weeks of 7 days / {prot_work_wks:.2f} work weeks of 5 days)",
         "Demand during Protection Period": f"{d:,.2f} * ({r:,.1f} + {l:,.1f}) = {d:,.2f} * {prot_period:,.1f} = {demand_prot:,.2f} units",
         "Protection Period Std Dev (sigma_prot)": f"{sig_d:,.2f} * sqrt({prot_period:,.1f}) = {sig_d:,.2f} * {math.sqrt(prot_period):.4f} = {sigma_prot:,.2f} units",
         "Safety Stock (SS)": f"{z:.4f} * {sigma_prot:,.2f} = {ss:,.2f} units  (CSL: {csl_str})",
@@ -1106,8 +1195,11 @@ def calculate_periodic_review(
     # 5. Intermediate Calculations
     intermediate_calcs = {
         "step_1_review_period_R": r,
+        "step_1b_review_period_weeks": f"{r_cal_wks:.2f} calendar weeks ({r:.1f} days @ 7 days/wk) / {r_work_wks:.2f} work weeks ({r:.1f} days @ 5 days/wk)",
         "step_2_lead_time_L": l,
+        "step_2b_lead_time_weeks": f"{l_cal_wks:.2f} calendar weeks ({l:.1f} days @ 7 days/wk) / {l_work_wks:.2f} work weeks ({l:.1f} days @ 5 days/wk)",
         "step_3_protection_period_R_plus_L": prot_period,
+        "step_3b_protection_period_weeks": f"{prot_cal_wks:.2f} calendar weeks ({prot_period:.1f} days @ 7 days/wk) / {prot_work_wks:.2f} work weeks ({prot_period:.1f} days @ 5 days/wk)",
         "step_4_demand_during_protection_period": round(demand_prot, 2),
         "step_5_sigma_protection_period": round(sigma_prot, 4),
         "step_6_z_score": round(z, 4),
@@ -1127,6 +1219,9 @@ def calculate_periodic_review(
         "target_inventory_units": "units (order-up-to base stock level M)",
         "safety_stock": round(ss, 2),
         "protection_period": prot_period,
+        "protection_period_clarification": f"{prot_period:.1f} days ({prot_cal_wks:.2f} calendar weeks @ 7 days/wk / {prot_work_wks:.2f} work weeks @ 5 days/wk)",
+        "review_period_clarification": f"{r:.1f} days ({r_cal_wks:.2f} calendar weeks @ 7 days/wk / {r_work_wks:.2f} work weeks @ 5 days/wk)",
+        "lead_time_clarification": f"{l:.1f} days ({l_cal_wks:.2f} calendar weeks @ 7 days/wk / {l_work_wks:.2f} work weeks @ 5 days/wk)",
         "current_inventory_position": round(inv_pos, 2),
     }
 
@@ -1159,6 +1254,7 @@ def calculate_periodic_review(
         "Inventory position equals On-Hand + On-Order - Backorders.",
         "Customer stockouts occurring during the protection period are backordered.",
         "Demand per period is independent and identically normally distributed.",
+        "Time Units & Calendar Definition: 1 work week is defined as 5 operating days; 1 calendar week is defined as 7 calendar days. Review period R, lead time L, and protection period (R+L) are clearly defined in days, and any result given in a fraction or percentage of a week includes the exact number of days.",
     ]
 
     return PeriodicReviewResult(
@@ -1571,6 +1667,7 @@ INVENTORY_POLICY_GUIDELINES: Dict[str, Dict[str, str]] = {
         "class": "A",
         "description": "High Value & High Velocity (Top 60% Sales / High Hits)",
         "cycle_counting": "Every week",
+        "cycle_counting_detail": "Every week (every 5 operating days / 7 calendar days; 50–52 audits/year)",
         "service_level": "High CSL: 95%–98%",
         "safety_stock": "High buffer: Strict statistical calculation (SS = z * sigma_LTD) with continuous monitoring",
         "replenishment_policy": "Continuous Review (s, Q); frequent small replenishment batches; JIT delivery",
@@ -1582,6 +1679,7 @@ INVENTORY_POLICY_GUIDELINES: Dict[str, Dict[str, str]] = {
         "class": "B",
         "description": "Moderate Value & Moderate Velocity (Next 20% Sales / Moderate Hits)",
         "cycle_counting": "Once a month",
+        "cycle_counting_detail": "Once a month (every 4 weeks / ~20 operating days / 30 calendar days; 12 audits/year)",
         "service_level": "Medium CSL: 85%–90%",
         "safety_stock": "Medium buffer: Standard lead-time variance protection",
         "replenishment_policy": "Periodic Review (R, S) base stock system or standard EOQ with monthly reviews",
@@ -1593,6 +1691,7 @@ INVENTORY_POLICY_GUIDELINES: Dict[str, Dict[str, str]] = {
         "class": "C",
         "description": "Low Value & Low Velocity (Next 10% Sales / Low Hits)",
         "cycle_counting": "Once a year",
+        "cycle_counting_detail": "Once a year (every 50–52 weeks / 250 operating days / 365 calendar days; 1 annual audit)",
         "service_level": "Low CSL: 70%–80%",
         "safety_stock": "Low buffer: Minimal or rule-of-thumb buffer; stockouts carry low business impact",
         "replenishment_policy": "Two-Bin, Min-Max, visual inspection, or Kanban; bulk infrequent orders (large EOQ)",
@@ -1604,6 +1703,7 @@ INVENTORY_POLICY_GUIDELINES: Dict[str, Dict[str, str]] = {
         "class": "D",
         "description": "Dormant / Dead Stock / Obsolete Items (Remaining 10% Sales / Zero Hits)",
         "cycle_counting": "Do not count",
+        "cycle_counting_detail": "Do not count (0 audits; liquidate, donate, destroy, or discount)",
         "service_level": "N/A (0%) — No service level commitment for inactive/dead stock",
         "safety_stock": "No safety stock; donate, destroy, or discount",
         "replenishment_policy": "Non-stock / Do Not Reorder; strict Make-to-Order (MTO) if customer requests",
@@ -1938,8 +2038,9 @@ def classify_inventory_multicriteria(
         "Hits Score": "Numerical score assigned to POS Hits Class (A = 4, B = 3, C = 2, D = 1)",
         "Combined Weighted Score": "Step 2 composite index: 0.65(Sales Score) + 0.35(Hits Score)",
         "Final Inventory Class": "Step 3 final inventory stratification: A (4.00-3.25), B (3.24-2.50), C (2.49-1.75), D (< 1.75)",
-        "Cycle Counting Frequency": "Inventory record audit cycle: A (Every week), B (Once a month), C (Once a year), D (Do not count)",
+        "Cycle Counting Frequency": "Inventory record audit cycle: A (Every week = 5 operating days / 7 calendar days), B (Once a month = 4 weeks / ~20 operating days / 30 calendar days), C (Once a year = 50-52 weeks / 250 operating days / 365 calendar days), D (Do not count)",
         "Safety Stock & CSL Target": "Safety stock buffering differentiated by class: A (95%–98% CSL), B (85%–90% CSL), C (70%–80% CSL), D (No safety stock; donate, destroy, or discount)",
+        "Time Units Definition": "1 work week = 5 operating days (50 work weeks = 250 operating days per year); 1 calendar week = 7 calendar days (52.14 calendar weeks = 365 calendar days). All cycle counting audit intervals explicitly define exact day equivalents.",
     }
 
     # 3. Formula
@@ -1959,7 +2060,7 @@ def classify_inventory_multicriteria(
         "Step 1 Sales Cumulative Cutoffs": f"A <= ${total_sales*sales_cutoffs[0]/100.0:,.2f} ({sales_cutoffs[0]:.0f}%), B <= ${total_sales*sales_cutoffs[1]/100.0:,.2f} ({sales_cutoffs[1]:.0f}%), C <= ${total_sales*sales_cutoffs[2]/100.0:,.2f} ({sales_cutoffs[2]:.0f}%), D > ({sales_cutoffs[2]:.0f}%)",
         "Step 1 Hits Cumulative Cutoffs": f"A <= {total_hits*hits_cutoffs[0]/100.0:,.0f} ({hits_cutoffs[0]:.0f}%), B <= {total_hits*hits_cutoffs[1]/100.0:,.0f} ({hits_cutoffs[1]:.0f}%), C <= {total_hits*hits_cutoffs[2]/100.0:,.0f} ({hits_cutoffs[2]:.0f}%), D > ({hits_cutoffs[2]:.0f}%)",
         "Step 3 Score Ranges": "Class A: 4.00 - 3.25 | Class B: 3.24 - 2.50 | Class C: 2.49 - 1.75 | Class D: < 1.75",
-        "Cycle Counting Standard": "A: Every week | B: Once a month | C: Once a year | D: Do not count",
+        "Cycle Counting Standard": "A: Every week (5 operating / 7 calendar days; 50-52 audits/yr) | B: Once a month (4 weeks / ~20 operating days / 30 calendar days; 12 audits/yr) | C: Once a year (50-52 weeks / 250 operating / 365 calendar days; 1 audit/yr) | D: Do not count",
         "Service Level Standard": "A: High CSL 95%–98% | B: Medium CSL 85%–90% | C: Low CSL 70%–80% | D: 0% (No safety stock; donate/destroy/discount)",
     }
 
@@ -2056,6 +2157,7 @@ def classify_inventory_multicriteria(
         "Class B Policy: Cycle count once a month; Medium CSL 85%–90%; standard safety stock buffer; Periodic Review (R, S) / standard EOQ.",
         "Class C Policy: Cycle count once a year; Low CSL 70%–80%; minimal buffer; Two-Bin / Min-Max / Kanban with bulk orders.",
         "Class D Policy: Do not count; No safety stock; immediate disposition: donate, destroy, or discount; non-stock status.",
+        "Cycle Counting & Time Units Definition: 1 work week is defined as 5 operating days (50 work weeks = 250 operating days per year); 1 calendar week is defined as 7 calendar days. Class A items are counted weekly (every 5 operating / 7 calendar days; 50-52 audits/yr); Class B items monthly (every 4 weeks / ~20 operating days / 30 calendar days; 12 audits/yr); Class C items annually (once per year / 250 operating days / 365 calendar days; 1 audit/yr); Class D items are not counted.",
     ]
 
     return MulticriteriaClassificationResult(

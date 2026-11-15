@@ -203,6 +203,17 @@ def run_streamlit_app():
         """
     )
 
+    st.sidebar.markdown("---")
+    st.sidebar.header("⏱️ Operational Calendar & Time Units")
+    st.sidebar.markdown(
+        """
+        - **Operating Day (Work Day):** Standard business day (annual basis: **250 work days**).
+        - **Work Week (Operating Week):** **5 operating days** (50 work weeks = 250 work days/year).
+        - **Calendar Week:** **7 calendar days** (52.14 calendar weeks = 365 days/year).
+        - **Clarification Rule:** Any metric or result given in a fraction or percentage of a week includes the exact number of days.
+        """
+    )
+
     # DATA UPLOAD: Last section in the left sidebar
     st.sidebar.markdown("---")
     st.sidebar.header("📁 Data Upload")
@@ -344,11 +355,11 @@ def run_streamlit_app():
                 with st.expander("📘 Strategic Policy Guide: Safety Stock, Service Levels & Cycle Counting Impact"):
                     st.markdown(
                         """
-                        ##### 1. Cycle Counting Standards
-                        - **Class A Items — Every Week:** Class A items generate the bulk of dollar throughput and customer fulfillment impact. Weekly physical auditing is critical to maintain near-100% record accuracy and detect shrink or discrepancy before stockouts occur.
-                        - **Class B Items — Once a Month:** Represents intermediate inventory investment; monthly physical verification maintains reliable replenishment data without excessive operational labor.
-                        - **Class C Items — Once a Year:** Low monetary value; counting frequently yields negligible return on labor. An annual audit is sufficient.
-                        - **Class D Items — Do Not Count:** Stagnant or obsolete material. Routine counting squanders warehouse labor on dead inventory.
+                        ##### 1. Cycle Counting Standards (Defined in Days & Weeks)
+                        - **Class A Items — Every Week:** Defined as every 5 operating days / 7 calendar days (50–52 physical audits per year). Class A items generate the bulk of dollar throughput and customer fulfillment impact. Weekly physical auditing is critical to maintain near-100% record accuracy and detect shrink or discrepancy before stockouts occur.
+                        - **Class B Items — Once a Month:** Defined as every 4 weeks (~20 operating days / 30 calendar days, 12 physical audits per year). Represents intermediate inventory investment; monthly physical verification maintains reliable replenishment data without excessive operational labor.
+                        - **Class C Items — Once a Year:** Defined as annually (every 50–52 weeks / 250 operating days / 365 calendar days, 1 physical audit per year). Low monetary value; counting frequently yields negligible return on labor. An annual audit is sufficient.
+                        - **Class D Items — Do Not Count:** Stagnant or obsolete material (0 audits). Routine counting squanders warehouse labor on dead inventory. Immediate disposition required: Donate, Destroy, or Discount.
 
                         ---
 

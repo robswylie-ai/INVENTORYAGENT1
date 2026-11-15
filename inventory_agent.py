@@ -98,9 +98,13 @@ class InventoryDecisionAgent:
             scores["quantity_discount"] += 4
 
         # 3. Fixed Period Review indicators
-        if any(w in text for w in ["fixed period", "periodic review", "order up to", "order-up-to", "base stock", "review period", "review interval", "reviewed every"]):
+        if any(w in text for w in ["fixed period", "periodic review", "order up to", "order-up-to", "base stock", "review period", "review interval", "reviewed every", "review every"]):
+            scores["fixed_period_review"] += 6
+        if re.search(r"review(?:ed)?\s+(?:[a-zA-Z]+\s+)?every", text):
             scores["fixed_period_review"] += 6
         if ("review" in text or "reviewed" in text or "interval" in text) and ("lead time" in text or "order" in text or "target" in text):
+            scores["fixed_period_review"] += 4
+        if any(w in text for w in ["on-hand plus on-order", "inventory position", "target level", "order-up-to", "order up to level"]):
             scores["fixed_period_review"] += 4
 
         # 4. Safety Stock & ROP indicators
@@ -304,9 +308,25 @@ class InventoryDecisionAgent:
             std_demand = 15.0
 
         # Lead time
-        lead_time = self._extract_number(r"(?:lead\s*time|takes?)\s*(?:is|of)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:days?|weeks?|periods?)?", text)
-        if lead_time is None:
-            lead_time = 6.0
+        l_week_match = re.search(r"(?:lead\s*time|takes?)\s*(?:is|of)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:weeks?|wks?)\b", text, re.I)
+        if not l_week_match:
+            l_week_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(?:weeks?|wks?)\s*(?:lead\s*time|delivery\s*time)", text, re.I)
+        l_frac_week = None
+        if re.search(r"(?:half\s*(?:a)?\s*week|1/2\s*week|50%\s*of\s*(?:a)?\s*week)\s*(?:lead\s*time)?", text, re.I):
+            l_frac_week = 0.5
+
+        if l_week_match:
+            lead_time = float(l_week_match.group(1)) * 7.0
+        elif l_frac_week is not None:
+            lead_time = l_frac_week * 7.0
+        else:
+            l_day_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(?:days?|operating\s*days?)\s*(?:lead\s*time|delivery\s*time)", text, re.I)
+            if l_day_match:
+                lead_time = float(l_day_match.group(1))
+            else:
+                lead_time = self._extract_number(r"(?:lead\s*time|takes?)\s*(?:is|of)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:days?|periods?)?", text)
+                if lead_time is None:
+                    lead_time = 6.0
 
         # Service level
         service_level = None
@@ -332,14 +352,40 @@ class InventoryDecisionAgent:
 
     def _extract_fixed_period_inputs(self, text: str) -> Dict[str, Any]:
         # Review period R
-        review_period = self._extract_number(r"(?:review\s*period|review\s*interval|reviewed\s*every|every)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:days?|weeks?|periods?)", text)
-        if review_period is None:
-            review_period = 7.0
+        r_week_match = re.search(r"(?:review\s*period|review\s*interval|reviewed\s*every|every)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:weeks?|wks?)\b", text, re.I)
+        r_frac_week = None
+        if re.search(r"(?:review\s*period|review\s*interval|reviewed\s*every|every).*(?:half\s*(?:a)?\s*week|1/2\s*week|50%\s*of\s*(?:a)?\s*week)", text, re.I):
+            r_frac_week = 0.5
+
+        if r_week_match:
+            review_period = float(r_week_match.group(1)) * 7.0
+        elif r_frac_week is not None:
+            review_period = r_frac_week * 7.0
+        else:
+            review_period = self._extract_number(r"(?:review\s*period|review\s*interval|reviewed\s*every|every)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:days?|periods?)?", text)
+            if review_period is None:
+                review_period = 7.0
 
         # Lead time L
-        lead_time = self._extract_number(r"(?:lead\s*time|delivery\s*time)\s*(?:of|is)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:days?|weeks?|periods?)", text)
-        if lead_time is None:
-            lead_time = 3.0
+        l_week_match = re.search(r"(?:lead\s*time|delivery\s*time)\s*(?:of|is)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:weeks?|wks?)\b", text, re.I)
+        if not l_week_match:
+            l_week_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(?:weeks?|wks?)\s*(?:lead\s*time|delivery\s*time)", text, re.I)
+        l_frac_week = None
+        if re.search(r"(?:half\s*(?:a)?\s*week|1/2\s*week|50%\s*of\s*(?:a)?\s*week)\s*(?:lead\s*time)?", text, re.I):
+            l_frac_week = 0.5
+
+        if l_week_match:
+            lead_time = float(l_week_match.group(1)) * 7.0
+        elif l_frac_week is not None:
+            lead_time = l_frac_week * 7.0
+        else:
+            l_day_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(?:days?|operating\s*days?)\s*(?:lead\s*time|delivery\s*time)", text, re.I)
+            if l_day_match:
+                lead_time = float(l_day_match.group(1))
+            else:
+                lead_time = self._extract_number(r"(?:lead\s*time|delivery\s*time)\s*(?:of|is)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:days?|periods?)?", text)
+                if lead_time is None:
+                    lead_time = 3.0
 
         # Average demand
         avg_demand = self._extract_number(r"(?:average\s+demand|mean\s+demand|daily\s+demand|weekly\s+demand|demand\s+is)\s*(?:of|is|about)?\s*([0-9,]+(?:\.[0-9]+)?)", text)
@@ -360,7 +406,20 @@ class InventoryDecisionAgent:
             service_level = 0.95
 
         # Current inventory
-        current_inv = self._extract_number(r"(?:current\s*inventory|on\s*hand|current\s*stock|currently\s*have)\s*(?:is|of)?\s*([0-9,]+(?:\.[0-9]+)?)", text, default=0.0)
+        current_inv = self._extract_number(
+            r"(?:current\s*inventory(?:\s*(?:position|on-hand\s*plus\s*on-order|on\s*hand|level))?|inventory\s*position|on-hand\s*plus\s*on-order|current\s*stock|currently\s*have)\s*(?:is|of|=|:)?\s*([0-9,]+(?:\.[0-9]+)?)",
+            text
+        )
+        if current_inv is None:
+            m_ho = re.search(r"(?:on-hand|on\s*hand)\s*(?:plus|\+)\s*(?:on-order|on\s*order)\s*(?:is|of|=|:)?\s*([0-9,]+(?:\.[0-9]+)?)", text, re.I)
+            if m_ho:
+                current_inv = float(m_ho.group(1).replace(",", ""))
+        if current_inv is None:
+            m_inv = re.search(r"([0-9,]+(?:\.[0-9]+)?)\s*units\s*(?:on\s*hand|in\s*stock|on-hand)", text, re.I)
+            if m_inv:
+                current_inv = float(m_inv.group(1).replace(",", ""))
+        if current_inv is None:
+            current_inv = 0.0
 
         return {
             "review_period": float(review_period),
@@ -368,7 +427,7 @@ class InventoryDecisionAgent:
             "avg_demand_per_period": float(avg_demand),
             "std_demand_per_period": float(std_demand),
             "service_level": float(service_level),
-            "current_inventory": float(current_inv) if current_inv is not None else 0.0,
+            "current_inventory": float(current_inv),
         }
 
     def _extract_newsvendor_inputs(self, text: str) -> Dict[str, Any]:
@@ -421,7 +480,8 @@ class InventoryDecisionAgent:
 
     def _extract_classification_inputs(self, text: str) -> Dict[str, Any]:
         """
-        Extracts DataFrame input for multicriteria inventory classification.
+        Extracts DataFrame input and parameters for multicriteria inventory classification.
+        Extracts weights and cutoffs if provided in the text.
         Defaults to the bundled sample classification dataset if present.
         """
         import os
@@ -436,7 +496,31 @@ class InventoryDecisionAgent:
                 "Sales ($)": [125000.0, 35000.0, 8000.0, 0.0],
                 "Hits": [1400, 350, 80, 0],
             })
-        return {"df": df}
+
+        inputs: Dict[str, Any] = {"df": df}
+
+        # Extract weights (e.g. 65% for sales and 35% for hits or 0.65 / 0.35)
+        m_sw = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:weight\s*)?(?:for\s*)?sales", text, re.I)
+        if not m_sw:
+            m_sw = re.search(r"(?:sales\s*(?:weight)?\s*(?:is|of|=|:)?\s*([0-9]+(?:\.[0-9]+)?)\s*%)", text, re.I)
+        if not m_sw:
+            m_dec = re.search(r"(0\.[0-9]+)\s*\(\s*sales", text, re.I)
+            if m_dec:
+                inputs["sales_weight"] = float(m_dec.group(1))
+        if m_sw and "sales_weight" not in inputs:
+            inputs["sales_weight"] = float(m_sw.group(1)) / 100.0
+
+        m_hw = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:weight\s*)?(?:for\s*)?(?:pos\s*)?hits", text, re.I)
+        if not m_hw:
+            m_hw = re.search(r"(?:hits\s*(?:weight)?\s*(?:is|of|=|:)?\s*([0-9]+(?:\.[0-9]+)?)\s*%)", text, re.I)
+        if not m_hw:
+            m_dec = re.search(r"(0\.[0-9]+)\s*\(\s*(?:pos\s*)?hits", text, re.I)
+            if m_dec:
+                inputs["hits_weight"] = float(m_dec.group(1))
+        if m_hw and "hits_weight" not in inputs:
+            inputs["hits_weight"] = float(m_hw.group(1)) / 100.0
+
+        return inputs
 
     # ========================================================================
     # STAGE 3: SELECT TOOL
@@ -517,6 +601,12 @@ class InventoryDecisionAgent:
 
         # 2. Variable Definitions
         sec2 = "\n#### 2. Variable Definitions\n"
+        sec2 += (
+            "> ℹ️ **Operational Time Units Definition:** 1 work week is defined as **5 operating days** "
+            "(standard annual basis: 250 work days = 50 work weeks per year); 1 calendar week is defined as **7 calendar days** "
+            "(standard calendar year: 365 days = 52.14 calendar weeks per year). All metrics presented in fractions "
+            "or percentages of a week explicitly state the exact number of days for complete user clarification.\n\n"
+        )
         if hasattr(result, "variable_definitions"):
             for sym, desc in result.variable_definitions.items():
                 sec2 += f"- **`{sym}`**: {desc}\n"
@@ -559,11 +649,11 @@ class InventoryDecisionAgent:
 
             sec6 += "\n\n### 📦 Recommended Inventory Management Policies (All Classes of Inventory)\n\n"
             sec6 += "| Final Class | Cycle Counting Frequency | Target Service Level (CSL) | Safety Stock Policy | Replenishment Policy | Sourcing & Disposition Strategy |\n"
-            sec6 += "|:---:|:---:|:---:|:---|:---|:---|\n"
-            sec6 += "| **A** | **Every week** | **High CSL: 95%–98%** | **High buffer**: Strict statistical calculation ($SS = z \\times \\sigma_{LTD}$) with continuous monitoring | Continuous Review $(s, Q)$ / JIT | Strategic VMI / Partner contracts |\n"
-            sec6 += "| **B** | **Once a month** | **Medium CSL: 85%–90%** | **Medium buffer**: Standard lead-time variance protection | Periodic Review $(R, S)$ / EOQ | Blanket POs / Scheduled orders |\n"
-            sec6 += "| **C** | **Once a year** | **Low CSL: 70%–80%** | **Low buffer**: Minimal or visual buffer; stockouts carry low financial impact | Two-Bin / Min-Max / Kanban | Distributor spot buys / Bulk orders |\n"
-            sec6 += "| **D** | **Do not count** | **N/A (0%)** | **No safety stock; donate, destroy, or discount** | Non-stock / Do Not Reorder | Salvage liquidation / Scrap write-off |\n"
+            sec6 += "|:---:|:---|:---:|:---|:---|:---|\n"
+            sec6 += "| **A** | **Every week** (every 5 operating days / 7 calendar days; 50–52 audits/year) | **High CSL: 95%–98%** | **High buffer**: Strict statistical calculation ($SS = z \\times \\sigma_{LTD}$) with continuous monitoring | Continuous Review $(s, Q)$ / JIT | Strategic VMI / Partner contracts |\n"
+            sec6 += "| **B** | **Once a month** (every 4 weeks / ~20 operating days / 30 calendar days; 12 audits/year) | **Medium CSL: 85%–90%** | **Medium buffer**: Standard lead-time variance protection | Periodic Review $(R, S)$ / EOQ | Blanket POs / Scheduled orders |\n"
+            sec6 += "| **C** | **Once a year** (every 50–52 weeks / 250 operating days / 365 calendar days; 1 annual audit) | **Low CSL: 70%–80%** | **Low buffer**: Minimal or visual buffer; stockouts carry low financial impact | Two-Bin / Min-Max / Kanban | Distributor spot buys / Bulk orders |\n"
+            sec6 += "| **D** | **Do not count** (0 audits / dead stock; donate, destroy, or discount) | **N/A (0%)** | **No safety stock; donate, destroy, or discount** | Non-stock / Do Not Reorder | Salvage liquidation / Scrap write-off |\n"
 
             sec6 += "\n\n#### 🎯 Strategic Impact on Safety Stock and Service-Level Policies\n"
             sec6 += "- **Class A Items (High Value & Velocity):** Generate the vast majority of sales revenue and pick activity. A high Cycle Service Level (95%–98%) is mandatory because stockouts cause severe customer attrition and revenue losses. Safety stock must be computed rigorously using statistical standard deviation ($SS = z \\times \\sigma_{LTD}$) with frequent replenishment to prevent costly over-buffering. Weekly cycle counts ensure near-100% inventory record accuracy.\n"
