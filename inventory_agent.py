@@ -15,6 +15,7 @@ Supports:
 from __future__ import annotations
 import re
 import json
+import math
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -185,32 +186,288 @@ class InventoryDecisionAgent:
                 return default
         return default
 
+    def _extract_demand_and_period(
+        self,
+        text: str,
+        target_period: str = "year",
+        default_demand: Optional[float] = None,
+        work_days: float = 250.0,
+    ) -> Tuple[float, str, str, str]:
+        """
+        Parses demand rate and associated time period (day, week, month, quarter, year)
+        from natural language text and converts it deterministically into the target period.
+
+        Returns:
+            (converted_demand, original_demand_str, demand_period_conversion, source_period)
+        """
+        val = None
+        src_period = "unspecified"
+
+        # Pattern 1: Explicit prefix period (e.g. "average weekly demand is 700", "daily demand is 50", "monthly demand of 800")
+        p_prefix = re.search(
+            r"(?:average\s+|mean\s+)?(daily|weekly|monthly|quarterly|annual|yearly)\s*"
+            r"(?:demand|usage|sales|volume|requirements?)\s*(?:is|of|=|:)?\s*([0-9,]+(?:\.[0-9]+)?)",
+            text,
+            re.I,
+        )
+        if p_prefix:
+            val = float(p_prefix.group(2).replace(",", ""))
+            src_raw = p_prefix.group(1).lower()
+            if "daily" in src_raw:
+                src_period = "day"
+            elif "weekly" in src_raw:
+                src_period = "week"
+            elif "monthly" in src_raw:
+                src_period = "month"
+            elif "quarterly" in src_raw:
+                src_period = "quarter"
+            elif "annual" in src_raw or "yearly" in src_raw:
+                src_period = "year"
+
+        # Pattern 2: Explicit units per <period> (e.g., "50 units per day", "100 units/week", "800 units a month")
+        # Ensure the matched number is NOT standard deviation, lead time, or order cost
+        if val is None:
+            for m in re.finditer(
+                r"([0-9,]+(?:\.[0-9]+)?)\s*(?:units?)?\s*(?:per|\/|a)\s*"
+                r"(day|daily|work\s*day|operating\s*day|week|weekly|work\s*week|operating\s*week|month|monthly|quarter|quarterly|year|annual|annually)\b",
+                text,
+                re.I,
+            ):
+                preceding = text[max(0, m.start() - 35):m.start()].lower()
+                if any(w in preceding for w in ["deviation", "std", "sigma", "lead time", "lead-time", "cost", "$"]):
+                    continue
+                val = float(m.group(1).replace(",", ""))
+                src_raw = m.group(2).lower()
+                if "day" in src_raw:
+                    src_period = "day"
+                elif "week" in src_raw:
+                    src_period = "week"
+                elif "month" in src_raw:
+                    src_period = "month"
+                elif "quarter" in src_raw:
+                    src_period = "quarter"
+                elif "year" in src_raw or "annual" in src_raw:
+                    src_period = "year"
+                break
+
+        # Pattern 3: Suffix period words (e.g., "12,000 units annually", "50 units daily")
+        if val is None:
+            p3 = re.search(r"([0-9,]+(?:\.[0-9]+)?)\s*(?:units?)?\s*(annually|yearly|daily|weekly|monthly|quarterly)\b", text, re.I)
+            if p3:
+                val = float(p3.group(1).replace(",", ""))
+                src_raw = p3.group(2).lower()
+                if "daily" in src_raw:
+                    src_period = "day"
+                elif "weekly" in src_raw:
+                    src_period = "week"
+                elif "monthly" in src_raw:
+                    src_period = "month"
+                elif "quarterly" in src_raw:
+                    src_period = "quarter"
+                elif "annual" in src_raw or "yearly" in src_raw:
+                    src_period = "year"
+
+        # Pattern 4: Explicit annual phrases
+        if val is None:
+            p4 = re.search(r"(?:annual\s+demand|annual\s+usage|annual\s+sales|annual\s+need|demand\s+annually)\s*(?:is|of|=|:)?\s*([0-9,]+(?:\.[0-9]+)?)", text, re.I)
+            if p4:
+                val = float(p4.group(1).replace(",", ""))
+                src_period = "year"
+
+        # Pattern 5: General demand
+        if val is None:
+            p5 = re.search(r"(?:demand|sells?|selling|usage|volume|requires?)\s*(?:is|of|about|=|:)?\s*[\$]?([0-9,]+(?:\.[0-9]+)?)\s*(?:units?)?", text, re.I)
+            if p5:
+                val = float(p5.group(1).replace(",", ""))
+
+        # Pattern 6: Plain number before 'units'
+        if val is None:
+            p6 = re.search(r"([0-9,]+(?:\.[0-9]+)?)\s*units\b", text, re.I)
+            if p6:
+                val = float(p6.group(1).replace(",", ""))
+
+        # Fallback default
+        if val is None:
+            val = default_demand if default_demand is not None else 10000.0
+
+        # Perform period conversions
+        if target_period == "year":
+            if src_period == "day":
+                converted = val * work_days
+                orig = f"{val:,.2f} units per day"
+                conv = f"{val:,.2f} units/day * {work_days:,.0f} work days/year = {converted:,.2f} units/year"
+            elif src_period == "week":
+                m_wks = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(?:work\s*weeks|weeks\s*per\s*year)", text, re.I)
+                wks = float(m_wks.group(1)) if m_wks else (work_days / 5.0)
+                converted = val * wks
+                orig = f"{val:,.2f} units per week"
+                conv = f"{val:,.2f} units/week * {wks:,.1f} work weeks/year = {converted:,.2f} units/year"
+            elif src_period == "month":
+                converted = val * 12.0
+                orig = f"{val:,.2f} units per month"
+                conv = f"{val:,.2f} units/month * 12 months/year = {converted:,.2f} units/year"
+            elif src_period == "quarter":
+                converted = val * 4.0
+                orig = f"{val:,.2f} units per quarter"
+                conv = f"{val:,.2f} units/quarter * 4 quarters/year = {converted:,.2f} units/year"
+            else:
+                converted = val
+                orig = f"{val:,.2f} units/year"
+                conv = "Direct annual demand (no conversion needed)"
+        elif target_period == "day":
+            if src_period == "day":
+                converted = val
+                orig = f"{val:,.2f} units per day"
+                conv = "Direct daily demand (matches daily lead time period)"
+            elif src_period == "week":
+                is_work = bool(re.search(r"work\s*week|operating\s*week", text, re.I))
+                days_in_wk = 5.0 if is_work else 7.0
+                converted = val / days_in_wk
+                orig = f"{val:,.2f} units per week"
+                conv = f"{val:,.2f} units/week / {days_in_wk:,.0f} days/week = {converted:,.2f} units/day"
+            elif src_period == "month":
+                converted = val / 30.0
+                orig = f"{val:,.2f} units per month"
+                conv = f"{val:,.2f} units/month / 30 calendar days/month = {converted:,.2f} units/day"
+            elif src_period == "quarter":
+                converted = val / 90.0
+                orig = f"{val:,.2f} units per quarter"
+                conv = f"{val:,.2f} units/quarter / 90 calendar days/quarter = {converted:,.2f} units/day"
+            elif src_period == "year":
+                converted = val / work_days
+                orig = f"{val:,.2f} units per year"
+                conv = f"{val:,.2f} units/year / {work_days:,.0f} work days/year = {converted:,.2f} units/day"
+            else:
+                converted = val
+                orig = f"{val:,.2f} units/period"
+                conv = "Direct demand rate matching lead time period"
+        else:
+            converted = val
+            orig = f"{val:,.2f}"
+            conv = "Unspecified conversion"
+
+        return float(converted), orig, conv, src_period
+
+    def _extract_std_and_period(
+        self,
+        text: str,
+        demand_src_period: str,
+        target_period: str = "day",
+        default_std: Optional[float] = None,
+        work_days: float = 250.0,
+    ) -> Tuple[float, str]:
+        """
+        Parses standard deviation of demand and scales it according to Brownian motion variance properties:
+        sigma_target = sigma_source * sqrt(duration_target / duration_source).
+        """
+        val = None
+        std_period = demand_src_period
+
+        # Check explicit std dev period
+        p1 = re.search(
+            r"(?:standard\s+deviation|std\s*dev|sigma(?:_d)?)\s*(?:is|of|=|:)?\s*"
+            r"([0-9,]+(?:\.[0-9]+)?)\s*(?:units?)?\s*(?:per|\/|a)\s*"
+            r"(day|daily|work\s*day|operating\s*day|week|weekly|work\s*week|operating\s*week|month|monthly|quarter|quarterly|year|annual|annually)",
+            text,
+            re.I,
+        )
+        if p1:
+            val = float(p1.group(1).replace(",", ""))
+            raw = p1.group(2).lower()
+            if "day" in raw:
+                std_period = "day"
+            elif "week" in raw:
+                std_period = "week"
+            elif "month" in raw:
+                std_period = "month"
+            elif "quarter" in raw:
+                std_period = "quarter"
+            elif "year" in raw or "annual" in raw:
+                std_period = "year"
+
+        if val is None:
+            p2 = re.search(
+                r"(daily|weekly|monthly|quarterly|annual|yearly)\s*(?:standard\s+deviation|std\s*dev|sigma(?:_d)?)\s*(?:is|of|=|:)?\s*([0-9,]+(?:\.[0-9]+)?)",
+                text,
+                re.I,
+            )
+            if p2:
+                val = float(p2.group(2).replace(",", ""))
+                raw = p2.group(1).lower()
+                if "daily" in raw:
+                    std_period = "day"
+                elif "weekly" in raw:
+                    std_period = "week"
+                elif "monthly" in raw:
+                    std_period = "month"
+                elif "quarterly" in raw:
+                    std_period = "quarter"
+                elif "annual" in raw or "yearly" in raw:
+                    std_period = "year"
+
+        if val is None:
+            p3 = re.search(r"(?:standard\s+deviation|std\s*dev|sigma(?:_d)?)\s*(?:of|is|=|:)?\s*([0-9,]+(?:\.[0-9]+)?)", text, re.I)
+            if p3:
+                val = float(p3.group(1).replace(",", ""))
+
+        if val is None:
+            val = default_std if default_std is not None else 10.0
+
+        # Scale standard deviation
+        if target_period == "day":
+            if std_period == "day":
+                scaled = val
+                desc = f"{val:,.2f} units/day (direct daily std dev)"
+            elif std_period == "week":
+                is_work = bool(re.search(r"work\s*week|operating\s*week", text, re.I))
+                days_in_wk = 5.0 if is_work else 7.0
+                scaled = val / math.sqrt(days_in_wk)
+                desc = f"{val:,.2f} units/week / sqrt({days_in_wk:.0f}) = {scaled:,.2f} units/day"
+            elif std_period == "month":
+                scaled = val / math.sqrt(30.0)
+                desc = f"{val:,.2f} units/month / sqrt(30) = {scaled:,.2f} units/day"
+            elif std_period == "quarter":
+                scaled = val / math.sqrt(90.0)
+                desc = f"{val:,.2f} units/quarter / sqrt(90) = {scaled:,.2f} units/day"
+            elif std_period == "year":
+                scaled = val / math.sqrt(work_days)
+                desc = f"{val:,.2f} units/year / sqrt({work_days:,.0f}) = {scaled:,.2f} units/day"
+            else:
+                scaled = val
+                desc = f"{val:,.2f} units (direct std dev)"
+        else:
+            scaled = val
+            desc = f"{val:,.2f}"
+
+        return float(scaled), desc
+
     def _extract_eoq_inputs(self, text: str) -> Dict[str, Any]:
-        # Demand D
-        demand = self._extract_number(r"(?:annual\s+demand|demand\s+of|sells?|selling|requires?|annual\s+need)\s*(?:is|of|about)?\s*[\$]?([0-9,]+(?:\.[0-9]+)?)\s*(?:units?)?", text)
-        if demand is None:
-            # Try plain number followed by 'units'
-            m = re.search(r"([0-9,]+(?:\.[0-9]+)?)\s*units\s*(?:a\s*year|annually|per\s*year)?", text, re.I)
-            if m:
-                demand = float(m.group(1).replace(",", ""))
+        # Work days
+        work_days = self._extract_number(r"([0-9]+(?:\.[0-9]+)?)\s*(?:work\s*days|operating\s*days|days\s*per\s*year|days\s*a\s*year)", text, default=250.0)
+        wd = float(work_days) if work_days else 250.0
+
+        # Demand D & period conversion
+        demand, orig_demand, conv_demand, _ = self._extract_demand_and_period(
+            text, target_period="year", default_demand=10000.0, work_days=wd
+        )
 
         # Order Cost S
-        order_cost = self._extract_number(r"(?:order(?:ing)?\s*cost|setup\s*cost|cost\s*to\s*place\s*(?:an)?\s*order|costs?)\s*(?:is|of)?\s*\$?([0-9,]+(?:\.[0-9]+)?)", text)
+        order_cost = self._extract_number(r"(?:order(?:ing)?\s*cost|setup\s*cost|cost\s*to\s*place\s*(?:an)?\s*order|cost\s*per\s*order)\s*(?:is|of|=|:)?\s*\$?([0-9,]+(?:\.[0-9]+)?)", text)
         if order_cost is None:
             m = re.search(r"\$([0-9,]+(?:\.[0-9]+)?)\s*(?:per\s*order|to\s*order|to\s*place)", text, re.I)
             if m:
                 order_cost = float(m.group(1).replace(",", ""))
 
         # Holding Cost H or Rate i
-        holding_cost = self._extract_number(r"(?:holding\s*cost|carrying\s*cost)\s*(?:is|of)?\s*\$?([0-9,]+(?:\.[0-9]+)?)\s*(?:per\s*unit)?", text)
+        holding_cost = self._extract_number(r"(?:holding\s*cost|carrying\s*cost)\s*(?:is|of|=|:)?\s*\$?([0-9,]+(?:\.[0-9]+)?)\s*(?:per\s*unit)?", text)
         holding_rate = None
-        rate_match = re.search(r"(?:holding\s*(?:cost)?\s*rate|carrying\s*(?:cost)?\s*rate|rate\s*of)\s*(?:is|of)?\s*([0-9]+(?:\.[0-9]+)?)\s*%", text, re.I)
+        rate_match = re.search(r"(?:holding\s*(?:cost)?\s*rate|carrying\s*(?:cost)?\s*rate|rate\s*of)\s*(?:is|of|=|:)?\s*([0-9]+(?:\.[0-9]+)?)\s*%", text, re.I)
         if rate_match:
             holding_rate = float(rate_match.group(1)) / 100.0
 
         # Unit Cost C
         unit_cost = self._extract_number(
-            r"(?:unit\s*(?:cost|price)|purchase\s*price|item\s*cost|each\s*unit\s*costs?)\s*(?:is|of)?\s*\$?([0-9,]+(?:\.[0-9]+)?)",
+            r"(?:unit\s*(?:cost|price)|purchase\s*price|item\s*cost|each\s*unit\s*costs?)\s*(?:is|of|=|:)?\s*\$?([0-9,]+(?:\.[0-9]+)?)",
             text
         )
         if unit_cost is None:
@@ -219,12 +476,7 @@ class InventoryDecisionAgent:
             if m and "holding" not in text[max(0, m.start()-20):m.end()+20].lower():
                 unit_cost = float(m.group(1).replace(",", ""))
 
-        # Work days
-        work_days = self._extract_number(r"([0-9]+)\s*(?:work\s*days|operating\s*days|days\s*per\s*year)", text, default=250.0)
-
         # Defaults if missing
-        if demand is None:
-            demand = 10000.0
         if order_cost is None:
             order_cost = 50.0
         if holding_cost is None and holding_rate is None:
@@ -236,21 +488,25 @@ class InventoryDecisionAgent:
             "holding_cost": float(holding_cost) if holding_cost is not None else None,
             "unit_cost": float(unit_cost) if unit_cost is not None else None,
             "holding_cost_rate": float(holding_rate) if holding_rate is not None else None,
-            "work_days_per_year": float(work_days) if work_days else 250.0,
+            "work_days_per_year": wd,
+            "original_demand_input": orig_demand,
+            "demand_period_conversion": conv_demand,
         }
 
     def _extract_discount_inputs(self, text: str) -> Dict[str, Any]:
-        demand = self._extract_number(r"(?:annual\s+demand|demand\s+of|sells?|selling)\s*(?:is|of)?\s*[\$]?([0-9,]+(?:\.[0-9]+)?)\s*(?:units?)?", text)
-        if demand is None:
-            m = re.search(r"([0-9,]+(?:\.[0-9]+)?)\s*units", text, re.I)
-            demand = float(m.group(1).replace(",", "")) if m else 5000.0
+        work_days = self._extract_number(r"([0-9]+(?:\.[0-9]+)?)\s*(?:work\s*days|operating\s*days|days\s*per\s*year)", text, default=250.0)
+        wd = float(work_days) if work_days else 250.0
 
-        order_cost = self._extract_number(r"(?:order(?:ing)?\s*cost|setup\s*cost|cost\s*per\s*order)\s*(?:is|of)?\s*\$?([0-9,]+(?:\.[0-9]+)?)", text, default=49.0)
+        demand, orig_demand, conv_demand, _ = self._extract_demand_and_period(
+            text, target_period="year", default_demand=5000.0, work_days=wd
+        )
+
+        order_cost = self._extract_number(r"(?:order(?:ing)?\s*cost|setup\s*cost|cost\s*per\s*order)\s*(?:is|of|=|:)?\s*\$?([0-9,]+(?:\.[0-9]+)?)", text, default=49.0)
 
         holding_rate = None
         rate_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:holding|carrying)", text, re.I)
         if not rate_match:
-            rate_match = re.search(r"(?:holding|carrying)\s*rate\s*(?:is|of)?\s*([0-9]+(?:\.[0-9]+)?)\s*%", text, re.I)
+            rate_match = re.search(r"(?:holding|carrying)\s*rate\s*(?:is|of|=|:)?\s*([0-9]+(?:\.[0-9]+)?)\s*%", text, re.I)
         if rate_match:
             holding_rate = float(rate_match.group(1)) / 100.0
         else:
@@ -293,19 +549,13 @@ class InventoryDecisionAgent:
             "order_cost": float(order_cost),
             "holding_cost_rate": float(holding_rate),
             "price_tiers": tiers,
+            "original_demand_input": orig_demand,
+            "demand_period_conversion": conv_demand,
         }
 
     def _extract_safety_stock_inputs(self, text: str) -> Dict[str, Any]:
-        # Average demand
-        avg_demand = self._extract_number(r"(?:average\s+demand|mean\s+demand|daily\s+demand|weekly\s+demand|demand\s+is)\s*(?:of|is|about)?\s*([0-9,]+(?:\.[0-9]+)?)", text)
-        if avg_demand is None:
-            m = re.search(r"([0-9,]+(?:\.[0-9]+)?)\s*units\s*per\s*(?:day|week|month)", text, re.I)
-            avg_demand = float(m.group(1).replace(",", "")) if m else 100.0
-
-        # Std dev of demand
-        std_demand = self._extract_number(r"(?:standard\s+deviation|std\s*dev|sigma(?:_d)?)\s*(?:of|is)?\s*([0-9,]+(?:\.[0-9]+)?)", text)
-        if std_demand is None:
-            std_demand = 15.0
+        work_days = self._extract_number(r"([0-9]+(?:\.[0-9]+)?)\s*(?:work\s*days|operating\s*days|days\s*per\s*year)", text, default=250.0)
+        wd = float(work_days) if work_days else 250.0
 
         # Lead time
         l_week_match = re.search(r"(?:lead\s*time|takes?)\s*(?:is|of)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:weeks?|wks?)\b", text, re.I)
@@ -328,6 +578,18 @@ class InventoryDecisionAgent:
                 if lead_time is None:
                     lead_time = 6.0
 
+        # Demand and period conversion
+        avg_demand, orig_demand, conv_demand, src_period = self._extract_demand_and_period(
+            text, target_period="day", default_demand=100.0, work_days=wd
+        )
+
+        # Standard deviation of demand scaled to daily basis
+        std_demand, std_desc = self._extract_std_and_period(
+            text, demand_src_period=src_period, target_period="day", default_std=15.0, work_days=wd
+        )
+
+        full_conversion = f"{conv_demand}; std dev: {std_desc}"
+
         # Service level
         service_level = None
         sl_match = re.search(r"([0-9]{2}(?:\.[0-9]+)?)\s*%\s*(?:service\s*level|cycle\s*service\s*level|csl|in-stock)", text, re.I)
@@ -348,9 +610,14 @@ class InventoryDecisionAgent:
             "lead_time": float(lead_time),
             "service_level": float(service_level),
             "std_lead_time": float(std_lt) if std_lt else 0.0,
+            "original_demand_input": orig_demand,
+            "demand_period_conversion": full_conversion,
         }
 
     def _extract_fixed_period_inputs(self, text: str) -> Dict[str, Any]:
+        work_days = self._extract_number(r"([0-9]+(?:\.[0-9]+)?)\s*(?:work\s*days|operating\s*days|days\s*per\s*year)", text, default=250.0)
+        wd = float(work_days) if work_days else 250.0
+
         # Review period R
         r_week_match = re.search(r"(?:review\s*period|review\s*interval|reviewed\s*every|every)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:weeks?|wks?)\b", text, re.I)
         r_frac_week = None
@@ -387,15 +654,17 @@ class InventoryDecisionAgent:
                 if lead_time is None:
                     lead_time = 3.0
 
-        # Average demand
-        avg_demand = self._extract_number(r"(?:average\s+demand|mean\s+demand|daily\s+demand|weekly\s+demand|demand\s+is)\s*(?:of|is|about)?\s*([0-9,]+(?:\.[0-9]+)?)", text)
-        if avg_demand is None:
-            avg_demand = 50.0
+        # Demand and period conversion
+        avg_demand, orig_demand, conv_demand, src_period = self._extract_demand_and_period(
+            text, target_period="day", default_demand=50.0, work_days=wd
+        )
 
-        # Std dev demand
-        std_demand = self._extract_number(r"(?:standard\s+deviation|std\s*dev|sigma)\s*(?:of|is)?\s*([0-9,]+(?:\.[0-9]+)?)", text)
-        if std_demand is None:
-            std_demand = 10.0
+        # Std dev demand scaled to daily
+        std_demand, std_desc = self._extract_std_and_period(
+            text, demand_src_period=src_period, target_period="day", default_std=10.0, work_days=wd
+        )
+
+        full_conversion = f"{conv_demand}; std dev: {std_desc}"
 
         # Service level
         service_level = None
@@ -428,6 +697,8 @@ class InventoryDecisionAgent:
             "std_demand_per_period": float(std_demand),
             "service_level": float(service_level),
             "current_inventory": float(current_inv),
+            "original_demand_input": orig_demand,
+            "demand_period_conversion": full_conversion,
         }
 
     def _extract_newsvendor_inputs(self, text: str) -> Dict[str, Any]:
@@ -458,24 +729,62 @@ class InventoryDecisionAgent:
         # Shortage penalty g
         shortage = self._extract_number(r"(?:shortage\s*penalty|goodwill\s*penalty|penalty|shortage\s*cost)\s*(?:of|is)?\s*\$?([0-9,]+(?:\.[0-9]+)?)", text, default=0.0)
 
+        # Check for selling season / horizon duration: e.g. "selling season lasts 30 days"
+        m_dur = re.search(r"(?:season|selling\s*season|selling\s*period|period|window|festival|event)\s*(?:lasts|is|of)?\s*([0-9]+(?:\.[0-9]+)?)\s*(days?|weeks?|months?)", text, re.I)
+        if not m_dur:
+            m_dur = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(days?|weeks?|months?)\s*(?:selling\s*season|season|selling\s*period|window|festival|event)", text, re.I)
+
         # Demand mean mu
         demand_mean = self._extract_number(r"(?:mean\s*(?:demand)?|average\s*demand|mean\s*of)\s*(?:is)?\s*([0-9,]+(?:\.[0-9]+)?)", text)
         if demand_mean is None:
             m = re.search(r"demand\s*(?:is)?\s*(?:normally\s*distributed\s*with\s*)?(?:mean\s*)?([0-9,]+(?:\.[0-9]+)?)", text, re.I)
-            demand_mean = float(m.group(1).replace(",", "")) if m else 500.0
+            demand_mean = float(m.group(1).replace(",", "")) if m else 450.0
 
         # Demand std dev sigma
-        demand_std = self._extract_number(r"(?:standard\s*deviation|std\s*dev|sigma)\s*(?:of|is)?\s*([0-9,]+(?:\.[0-9]+)?)", text)
+        demand_std = self._extract_number(r"(?:standard\s+deviation|std\s*dev|sigma)\s*(?:of|is)?\s*([0-9,]+(?:\.[0-9]+)?)", text)
         if demand_std is None:
-            demand_std = 100.0
+            demand_std = 75.0
+
+        # Rate unit check
+        m_rate = re.search(r"(daily|weekly|monthly)\s*(?:demand|sales|usage|mean)", text, re.I)
+        if not m_rate:
+            m_rate = re.search(r"units?\s*(?:per|\/|a)\s*(day|week|month)", text, re.I)
+
+        if m_dur and m_rate:
+            dur_num = float(m_dur.group(1))
+            dur_unit = m_dur.group(2).lower()
+            rate_unit = m_rate.group(1).lower()
+
+            if "day" in dur_unit and ("day" in rate_unit or "daily" in rate_unit):
+                mu = demand_mean * dur_num
+                sigma = demand_std * math.sqrt(dur_num)
+                conv_str = f"{demand_mean:,.2f} units/day * {dur_num:,.0f} days = {mu:,.2f} units; {demand_std:,.2f} * sqrt({dur_num:,.0f}) = {sigma:,.2f}"
+                orig_str = f"{demand_mean:,.2f} units/day, std dev {demand_std:,.2f} over {dur_num:,.0f}-day season"
+            elif "week" in dur_unit and ("week" in rate_unit or "weekly" in rate_unit):
+                mu = demand_mean * dur_num
+                sigma = demand_std * math.sqrt(dur_num)
+                conv_str = f"{demand_mean:,.2f} units/week * {dur_num:,.0f} weeks = {mu:,.2f} units; {demand_std:,.2f} * sqrt({dur_num:,.0f}) = {sigma:,.2f}"
+                orig_str = f"{demand_mean:,.2f} units/week, std dev {demand_std:,.2f} over {dur_num:,.0f}-week season"
+            else:
+                mu = demand_mean
+                sigma = demand_std
+                conv_str = "Direct single-period demand"
+                orig_str = f"mean: {demand_mean:,.2f}, std: {demand_std:,.2f}"
+        else:
+            mu = demand_mean
+            sigma = demand_std
+            conv_str = "Direct single-period demand (no seasonal scaling needed)"
+            orig_str = f"mean: {demand_mean:,.2f}, std: {demand_std:,.2f}"
 
         return {
             "unit_cost": float(unit_cost),
             "selling_price": float(selling_price),
-            "demand_mean": float(demand_mean),
-            "demand_std": float(demand_std),
+            "demand_mean": float(mu),
+            "demand_std": float(sigma),
             "salvage_value": float(salvage_val) if salvage_val else 0.0,
             "shortage_penalty": float(shortage) if shortage else 0.0,
+            "original_demand_input": orig_str,
+            "demand_period_conversion": conv_str,
         }
 
     def _extract_classification_inputs(self, text: str) -> Dict[str, Any]:

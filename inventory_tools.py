@@ -139,6 +139,7 @@ def calculate_eoq(
     unit_cost: Optional[float] = None,
     holding_cost_rate: Optional[float] = None,
     work_days_per_year: float = 250.0,
+    **kwargs,
 ) -> EOQResult:
     """
     Calculates deterministic Economic Order Quantity (Wilson formula).
@@ -196,6 +197,10 @@ def calculate_eoq(
         "holding_cost_rate (i)": i_val,
         "work_days_per_year": wd,
     }
+    if "original_demand_input" in kwargs:
+        inputs_extracted["original_demand_input"] = kwargs["original_demand_input"]
+    if "demand_period_conversion" in kwargs:
+        inputs_extracted["demand_period_conversion"] = kwargs["demand_period_conversion"]
 
     # 2. Variable Definitions
     variable_definitions = {
@@ -264,6 +269,7 @@ def calculate_eoq(
     # 5. Intermediate Calculations
     intermediate_calcs = {
         "2DS": two_ds,
+        "step_0_demand_period_conversion": kwargs.get("demand_period_conversion", "Direct annual demand (no conversion needed)"),
         "step_1_numerator_2DS": two_ds,
         "step_2_ratio_2DS_over_H": ratio,
         "step_3_sqrt_unrounded_Q": q_opt_raw,
@@ -446,6 +452,7 @@ def calculate_quantity_discount(
     price_tiers: List[Dict[str, Any]],
     holding_cost_rate: Optional[float] = None,
     fixed_holding_cost: Optional[float] = None,
+    **kwargs,
 ) -> QuantityDiscountResult:
     """
     Evaluates quantity discount schedules across all pricing tiers.
@@ -492,6 +499,10 @@ def calculate_quantity_discount(
         "fixed_holding_cost (H)": h_param if holding_type == "fixed" else None,
         "price_tiers": price_tiers,
     }
+    if "original_demand_input" in kwargs:
+        inputs_extracted["original_demand_input"] = kwargs["original_demand_input"]
+    if "demand_period_conversion" in kwargs:
+        inputs_extracted["demand_period_conversion"] = kwargs["demand_period_conversion"]
 
     # 2. Variable Definitions
     variable_definitions = {
@@ -584,6 +595,7 @@ def calculate_quantity_discount(
 
     # 5. Intermediate Calculations
     intermediate_calcs = {
+        "step_0_demand_period_conversion": kwargs.get("demand_period_conversion", "Direct annual demand (no conversion needed)"),
         "holding_cost_type": holding_type,
         "holding_rate_or_fixed": h_param,
         "evaluated_tier_details": [asdict(t) for t in tier_details],
@@ -788,6 +800,10 @@ def calculate_rop(
         "service_level (CSL)": service_level,
         "z_score (z)": z_score,
     }
+    if "original_demand_input" in kwargs:
+        inputs_extracted["original_demand_input"] = kwargs["original_demand_input"]
+    if "demand_period_conversion" in kwargs:
+        inputs_extracted["demand_period_conversion"] = kwargs["demand_period_conversion"]
 
     # 2. Variable Definitions
     variable_definitions = {
@@ -891,6 +907,7 @@ def calculate_rop(
 
     # 5. Intermediate Calculations
     intermediate_calcs = {
+        "step_0_demand_period_conversion": kwargs.get("demand_period_conversion", "Direct demand rate matching lead time period (no conversion needed)"),
         "case_type": case_type,
         "expected_lead_time_demand_DDLT": round(ddlt, 2),
         "lead_time_duration_days": round(l_mean, 2),
@@ -1115,6 +1132,10 @@ def calculate_periodic_review(
         "service_level (CSL)": service_level,
         "z_score (z)": z_score,
     }
+    if "original_demand_input" in kwargs:
+        inputs_extracted["original_demand_input"] = kwargs["original_demand_input"]
+    if "demand_period_conversion" in kwargs:
+        inputs_extracted["demand_period_conversion"] = kwargs["demand_period_conversion"]
 
     # 2. Variable Definitions
     variable_definitions = {
@@ -1194,6 +1215,7 @@ def calculate_periodic_review(
 
     # 5. Intermediate Calculations
     intermediate_calcs = {
+        "step_0_demand_period_conversion": kwargs.get("demand_period_conversion", "Direct demand rate matching review and lead time periods (no conversion needed)"),
         "step_1_review_period_R": r,
         "step_1b_review_period_weeks": f"{r_cal_wks:.2f} calendar weeks ({r:.1f} days @ 7 days/wk) / {r_work_wks:.2f} work weeks ({r:.1f} days @ 5 days/wk)",
         "step_2_lead_time_L": l,
@@ -1354,6 +1376,7 @@ def calculate_newsvendor(
     demand_std: float,
     salvage_value: float = 0.0,
     shortage_penalty: float = 0.0,
+    **kwargs,
 ) -> NewsvendorResult:
     """
     Calculates optimal order quantity for the single-period Newsvendor model.
@@ -1414,6 +1437,10 @@ def calculate_newsvendor(
         "demand_mean (mu)": mu,
         "demand_std (sigma)": sigma,
     }
+    if "original_demand_input" in kwargs:
+        inputs_extracted["original_demand_input"] = kwargs["original_demand_input"]
+    if "demand_period_conversion" in kwargs:
+        inputs_extracted["demand_period_conversion"] = kwargs["demand_period_conversion"]
 
     # 2. Variable Definitions
     variable_definitions = {
@@ -1484,6 +1511,7 @@ def calculate_newsvendor(
 
     # 5. Intermediate Calculations
     intermediate_calcs = {
+        "step_0_demand_period_conversion": kwargs.get("demand_period_conversion", "Direct single-period demand (no seasonal scaling needed)"),
         "step_1_underage_cost_Cu": round(cu, 2),
         "step_2_overage_cost_Co": round(co, 2),
         "step_3_critical_ratio_CR": round(cr, 6),
