@@ -116,10 +116,12 @@ class InventoryDecisionAgent:
             scores["eoq"] += 4
 
         # 6. Inventory Classification indicators
-        if any(w in text for w in ["classification", "classify", "multicriteria", "multi-criteria", "abc", "pareto", "hits", "sales ($)", "inventory classification"]):
+        if any(w in text for w in ["classification", "classify", "multicriteria", "multi-criteria", "abc", "pareto", "hits", "sales ($)", "inventory classification", "stratification"]):
             scores["inventory_classification"] += 7
-        if ("class" in text or "classes" in text) and ("a, b, c" in text or "sales" in text or "hits" in text or "matrix" in text):
-            scores["inventory_classification"] += 5
+        if ("class" in text or "classes" in text) and ("a, b, c" in text or "sales" in text or "hits" in text or "matrix" in text or "policy" in text or "inventory" in text):
+            scores["inventory_classification"] += 6
+        if any(w in text for w in ["cycle count", "cycle-counting", "inventory-management policy", "inventory management policy", "material classification"]):
+            scores["inventory_classification"] += 7
 
         # Disambiguation heuristics
         # If periodic review mentions review period and ROP, fixed period review takes priority
@@ -544,7 +546,31 @@ class InventoryDecisionAgent:
         sec6 = "\n#### 6. Final Answer\n"
         if hasattr(result, "final_answer"):
             for k, v in result.final_answer.items():
+                if k in ["policy_recommendations", "cycle_counting_policies", "target_service_levels", "safety_stock_policies", "replenishment_policies", "classification_summary"]:
+                    continue  # Formatted cleanly below
                 sec6 += f"- **{k.replace('_', ' ').title()}:** **{v}**\n"
+
+        if model == "inventory_classification" and hasattr(result, "class_summary_df"):
+            sec6 += "\n**Multicriteria Classification Summary Table:**\n\n"
+            sec6 += "| Final Inventory Class | Number of Items | Total Sales ($) | % of Items | % of Sales | Score Range |\n"
+            sec6 += "|:---:|:---:|:---:|:---:|:---:|:---:|\n"
+            for _, r in result.class_summary_df.iterrows():
+                sec6 += f"| **{r['Final Inventory Class']}** | {r['Number of Items']:,} | ${r['Total Sales ($)']:,.2f} | {r['% of Items']:.1f}% | {r['% of Sales']:.1f}% | {r['Combined Score Range']} |\n"
+
+            sec6 += "\n\n### 📦 Recommended Inventory Management Policies (All Classes of Inventory)\n\n"
+            sec6 += "| Final Class | Cycle Counting Frequency | Target Service Level (CSL) | Safety Stock Policy | Replenishment Policy | Sourcing & Disposition Strategy |\n"
+            sec6 += "|:---:|:---:|:---:|:---|:---|:---|\n"
+            sec6 += "| **A** | **Every week** | **High CSL: 95%–98%** | **High buffer**: Strict statistical calculation ($SS = z \\times \\sigma_{LTD}$) with continuous monitoring | Continuous Review $(s, Q)$ / JIT | Strategic VMI / Partner contracts |\n"
+            sec6 += "| **B** | **Once a month** | **Medium CSL: 85%–90%** | **Medium buffer**: Standard lead-time variance protection | Periodic Review $(R, S)$ / EOQ | Blanket POs / Scheduled orders |\n"
+            sec6 += "| **C** | **Once a year** | **Low CSL: 70%–80%** | **Low buffer**: Minimal or visual buffer; stockouts carry low financial impact | Two-Bin / Min-Max / Kanban | Distributor spot buys / Bulk orders |\n"
+            sec6 += "| **D** | **Do not count** | **N/A (0%)** | **No safety stock; donate, destroy, or discount** | Non-stock / Do Not Reorder | Salvage liquidation / Scrap write-off |\n"
+
+            sec6 += "\n\n#### 🎯 Strategic Impact on Safety Stock and Service-Level Policies\n"
+            sec6 += "- **Class A Items (High Value & Velocity):** Generate the vast majority of sales revenue and pick activity. A high Cycle Service Level (95%–98%) is mandatory because stockouts cause severe customer attrition and revenue losses. Safety stock must be computed rigorously using statistical standard deviation ($SS = z \\times \\sigma_{LTD}$) with frequent replenishment to prevent costly over-buffering. Weekly cycle counts ensure near-100% inventory record accuracy.\n"
+            sec6 += "- **Class B Items (Moderate Value & Velocity):** Represent standard core stock. A balanced 85%–90% CSL and moderate safety stock buffer optimize working capital while maintaining high fulfillment rates under periodic review.\n"
+            sec6 += "- **Class C Items (Low Value & Velocity):** Individual dollar impact is low. Investing in high service levels or precise safety stock buffers is economically wasteful due to holding cost drag. A 70%–80% CSL, visual Two-Bin/Kanban controls, and annual cycle counting minimize administrative overhead, while large infrequent bulk purchases keep ordering costs low.\n"
+            sec6 += "- **Class D Items (Dormant & Dead Stock):** Stagnant inventory generates zero revenue while consuming working capital, rack capacity, and insurance costs. Carrying any safety stock on Class D items causes compounding holding losses and depreciation. Cycle counting wastes labor ('Do not count'). The standard accepted action is immediate disposition: **Donate** (tax deduction), **Destroy** (scrap write-off), or **Discount** (clearance markdown).\n"
+
         if model == "quantity_discount" and hasattr(result, "tier_evaluations"):
             sec6 += "\n**Tier Comparison Matrix:**\n\n"
             sec6 += "| Tier | Range | Unit Price | Feasible Q | Purchase Cost | Order Cost | Hold Cost | Total Cost | Status |\n"

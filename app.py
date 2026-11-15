@@ -329,6 +329,40 @@ def run_streamlit_app():
                     st.caption("Sales Class (65%) × POS Hits Class (35%) item counts:")
                     st.dataframe(cross_tab, use_container_width=True)
 
+                # ============================================================
+                # ADVISABLE INVENTORY MANAGEMENT POLICIES (ALL CLASSES)
+                # ============================================================
+                st.markdown("#### 🎯 Best Inventory Management Policies (All Classes)")
+                st.caption(
+                    "Standard managerial action guidelines differentiated by multicriteria material class, "
+                    "incorporating cycle counting frequencies, cycle service levels (CSL), and safety-stock policies:"
+                )
+
+                if class_res.policy_summary_df is not None:
+                    st.dataframe(class_res.policy_summary_df, use_container_width=True, hide_index=True)
+
+                with st.expander("📘 Strategic Policy Guide: Safety Stock, Service Levels & Cycle Counting Impact"):
+                    st.markdown(
+                        """
+                        ##### 1. Cycle Counting Standards
+                        - **Class A Items — Every Week:** Class A items generate the bulk of dollar throughput and customer fulfillment impact. Weekly physical auditing is critical to maintain near-100% record accuracy and detect shrink or discrepancy before stockouts occur.
+                        - **Class B Items — Once a Month:** Represents intermediate inventory investment; monthly physical verification maintains reliable replenishment data without excessive operational labor.
+                        - **Class C Items — Once a Year:** Low monetary value; counting frequently yields negligible return on labor. An annual audit is sufficient.
+                        - **Class D Items — Do Not Count:** Stagnant or obsolete material. Routine counting squanders warehouse labor on dead inventory.
+
+                        ---
+
+                        ##### 2. Safety Stock & Cycle Service Level (CSL) Policies
+                        - **Class A Items — High CSL: 95%–98%:** Stockouts for Class A items inflict immediate lost sales and damage customer goodwill. Rigorous statistical safety stock ($SS = z \\times \\sigma_{LTD}$) must be maintained with continuous review $(s, Q)$ to protect revenue while avoiding expensive over-buffering.
+                        - **Class B Items — Medium CSL: 85%–90%:** Moderate safety stock buffers protect against standard lead-time demand variability while keeping capital carrying costs balanced under periodic review $(R, S)$.
+                        - **Class C Items — Low CSL: 70%–80%:** Stockout costs are low and carry minimal business impact. High safety stock is economically wasteful; maintain minimal buffer and order in bulk (large EOQ) using visual two-bin or min-max triggers.
+                        - **Class D Items — No Safety Stock (Donate, Destroy, or Discount):** Zero service level commitment. Holding safety stock on inactive material guarantees compounding storage costs, tax exposure, and capital obsolescence. Standard action is **immediate disposition**:
+                          - **Donate:** Tax deduction for qualified charitable recipients.
+                          - **Destroy:** Certified scrap write-off to free up warehouse rack slots.
+                          - **Discount:** Clearance markdowns or salvage liquidation.
+                        """
+                    )
+
                 # Class Filter and Display Enriched DataFrame
                 st.markdown("#### Stratified Inventory Dataset (with Calculated Scores)")
                 filter_class = st.radio(

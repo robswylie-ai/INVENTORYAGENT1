@@ -1561,6 +1561,57 @@ class MulticriteriaClassificationResult:
     classified_df: Any = None
     class_summary_df: Any = None
     cross_tab_matrix: Any = None
+    policy_recommendations: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    policy_summary_df: Any = None
+
+
+# Strategic Material Management & Inventory Policy Guidelines by Classification
+INVENTORY_POLICY_GUIDELINES: Dict[str, Dict[str, str]] = {
+    "A": {
+        "class": "A",
+        "description": "High Value & High Velocity (Top 60% Sales / High Hits)",
+        "cycle_counting": "Every week",
+        "service_level": "High CSL: 95%–98%",
+        "safety_stock": "High buffer: Strict statistical calculation (SS = z * sigma_LTD) with continuous monitoring",
+        "replenishment_policy": "Continuous Review (s, Q); frequent small replenishment batches; JIT delivery",
+        "forecasting": "Rigorous quantitative item-level forecasting (ARIMA, Exponential Smoothing, demand sensing)",
+        "sourcing_strategy": "Strategic vendor partnerships, Vendor-Managed Inventory (VMI), pre-negotiated short lead times",
+        "action_standard": "Tightest operational control; weekly physical count; expedite if buffer is threatened",
+    },
+    "B": {
+        "class": "B",
+        "description": "Moderate Value & Moderate Velocity (Next 20% Sales / Moderate Hits)",
+        "cycle_counting": "Once a month",
+        "service_level": "Medium CSL: 85%–90%",
+        "safety_stock": "Medium buffer: Standard lead-time variance protection",
+        "replenishment_policy": "Periodic Review (R, S) base stock system or standard EOQ with monthly reviews",
+        "forecasting": "Automated statistical moving averages with exception-based reviews",
+        "sourcing_strategy": "Reliable approved suppliers, blanket purchase orders with periodic call-offs",
+        "action_standard": "Management by exception; monthly cycle counts; standard replenishment batches",
+    },
+    "C": {
+        "class": "C",
+        "description": "Low Value & Low Velocity (Next 10% Sales / Low Hits)",
+        "cycle_counting": "Once a year",
+        "service_level": "Low CSL: 70%–80%",
+        "safety_stock": "Low buffer: Minimal or rule-of-thumb buffer; stockouts carry low business impact",
+        "replenishment_policy": "Two-Bin, Min-Max, visual inspection, or Kanban; bulk infrequent orders (large EOQ)",
+        "forecasting": "Simple annual usage extrapolation or historical moving average; minimal forecasting labor",
+        "sourcing_strategy": "Catalog distributor purchasing, spot buys, consolidated multi-item purchase orders",
+        "action_standard": "Low managerial oversight; annual physical audit; bulk purchase to minimize PO costs",
+    },
+    "D": {
+        "class": "D",
+        "description": "Dormant / Dead Stock / Obsolete Items (Remaining 10% Sales / Zero Hits)",
+        "cycle_counting": "Do not count",
+        "service_level": "N/A (0%) — No service level commitment for inactive/dead stock",
+        "safety_stock": "No safety stock; donate, destroy, or discount",
+        "replenishment_policy": "Non-stock / Do Not Reorder; strict Make-to-Order (MTO) if customer requests",
+        "forecasting": "Zero demand forecast; flag SKU as deactivated or phased out in ERP",
+        "sourcing_strategy": "Salvage and liquidation: supplier return, clearance markdown, tax-deductible donation, or scrap write-off",
+        "action_standard": "Immediate disposition: donate, destroy, or discount to free warehouse space and capital",
+    },
+}
 
 
 # Score conversion mapping (A=4, B=3, C=2, D=1)
@@ -1839,6 +1890,21 @@ def classify_inventory_multicriteria(
 
     summary_df = pd.DataFrame(summary_rows)
 
+    # Build Strategic Inventory Policy Recommendations Table (All Classes)
+    policy_rows = []
+    for c in class_order:
+        pol = INVENTORY_POLICY_GUIDELINES[c]
+        policy_rows.append({
+            "Final Inventory Class": c,
+            "Cycle Counting Frequency": pol["cycle_counting"],
+            "Target Cycle Service Level (CSL)": pol["service_level"],
+            "Safety Stock Policy": pol["safety_stock"],
+            "Replenishment Policy": pol["replenishment_policy"],
+            "Forecasting Approach": pol["forecasting"],
+            "Sourcing & Disposition Strategy": pol["sourcing_strategy"],
+        })
+    policy_summary_df = pd.DataFrame(policy_rows)
+
     # Cross-tabulation Matrix (Sales Class x Hits Class)
     cross_tab = pd.crosstab(
         working_df["Sales Class"],
@@ -1872,6 +1938,8 @@ def classify_inventory_multicriteria(
         "Hits Score": "Numerical score assigned to POS Hits Class (A = 4, B = 3, C = 2, D = 1)",
         "Combined Weighted Score": "Step 2 composite index: 0.65(Sales Score) + 0.35(Hits Score)",
         "Final Inventory Class": "Step 3 final inventory stratification: A (4.00-3.25), B (3.24-2.50), C (2.49-1.75), D (< 1.75)",
+        "Cycle Counting Frequency": "Inventory record audit cycle: A (Every week), B (Once a month), C (Once a year), D (Do not count)",
+        "Safety Stock & CSL Target": "Safety stock buffering differentiated by class: A (95%–98% CSL), B (85%–90% CSL), C (70%–80% CSL), D (No safety stock; donate, destroy, or discount)",
     }
 
     # 3. Formula
@@ -1881,6 +1949,7 @@ def classify_inventory_multicriteria(
         "Step 1 - Score Conversion": "A = 4, B = 3, C = 2, D = 1",
         "Step 2 - Combined Weighted Score": f"Combined Weighted Score = {sales_weight:.2f}(Sales Score) + {hits_weight:.2f}(Hits Score)",
         "Step 3 - Final Inventory Class": "A: 4.00 - 3.25; B: 3.24 - 2.50; C: 2.49 - 1.75; D: < 1.75",
+        "Safety Stock Formula": "SS = z(CSL) * sigma_LTD  [Applied to A and B; rule of thumb for C; zero for D]",
     }
 
     # 4. Formula with Substituted Values
@@ -1890,6 +1959,8 @@ def classify_inventory_multicriteria(
         "Step 1 Sales Cumulative Cutoffs": f"A <= ${total_sales*sales_cutoffs[0]/100.0:,.2f} ({sales_cutoffs[0]:.0f}%), B <= ${total_sales*sales_cutoffs[1]/100.0:,.2f} ({sales_cutoffs[1]:.0f}%), C <= ${total_sales*sales_cutoffs[2]/100.0:,.2f} ({sales_cutoffs[2]:.0f}%), D > ({sales_cutoffs[2]:.0f}%)",
         "Step 1 Hits Cumulative Cutoffs": f"A <= {total_hits*hits_cutoffs[0]/100.0:,.0f} ({hits_cutoffs[0]:.0f}%), B <= {total_hits*hits_cutoffs[1]/100.0:,.0f} ({hits_cutoffs[1]:.0f}%), C <= {total_hits*hits_cutoffs[2]/100.0:,.0f} ({hits_cutoffs[2]:.0f}%), D > ({hits_cutoffs[2]:.0f}%)",
         "Step 3 Score Ranges": "Class A: 4.00 - 3.25 | Class B: 3.24 - 2.50 | Class C: 2.49 - 1.75 | Class D: < 1.75",
+        "Cycle Counting Standard": "A: Every week | B: Once a month | C: Once a year | D: Do not count",
+        "Service Level Standard": "A: High CSL 95%–98% | B: Medium CSL 85%–90% | C: Low CSL 70%–80% | D: 0% (No safety stock; donate/destroy/discount)",
     }
 
     # 5. Intermediate Calculations
@@ -1903,6 +1974,9 @@ def classify_inventory_multicriteria(
         "sales_by_final_class": working_df.groupby("Final Inventory Class")[sales_col].sum().to_dict(),
         "hits_by_final_class": working_df.groupby("Final Inventory Class")[hits_col].sum().to_dict(),
         "avg_score_by_final_class": working_df.groupby("Final Inventory Class")["Combined Weighted Score"].mean().round(3).to_dict(),
+        "cycle_counting_frequency_by_class": {c: INVENTORY_POLICY_GUIDELINES[c]["cycle_counting"] for c in class_order},
+        "target_service_level_by_class": {c: INVENTORY_POLICY_GUIDELINES[c]["service_level"] for c in class_order},
+        "safety_stock_policy_by_class": {c: INVENTORY_POLICY_GUIDELINES[c]["safety_stock"] for c in class_order},
     }
 
     # 6. Final Answer
@@ -1926,6 +2000,11 @@ def classify_inventory_multicriteria(
         "total_sales_dollars": total_sales,
         "total_hits_count": total_hits,
         "classification_summary": summary_df[["Final Inventory Class", "Number of Items", "Total Sales ($)", "% of Items", "% of Sales"]].to_dict(orient="records"),
+        "policy_recommendations": INVENTORY_POLICY_GUIDELINES,
+        "cycle_counting_policies": {c: INVENTORY_POLICY_GUIDELINES[c]["cycle_counting"] for c in class_order},
+        "target_service_levels": {c: INVENTORY_POLICY_GUIDELINES[c]["service_level"] for c in class_order},
+        "safety_stock_policies": {c: INVENTORY_POLICY_GUIDELINES[c]["safety_stock"] for c in class_order},
+        "replenishment_policies": {c: INVENTORY_POLICY_GUIDELINES[c]["replenishment_policy"] for c in class_order},
     }
 
     # 7. Verification Checks
@@ -1958,6 +2037,12 @@ def classify_inventory_multicriteria(
             "passed": bool(working_df["Combined Weighted Score"].between(1.00, 4.00).all()),
             "detail": f"All item weighted scores fall strictly within theoretical boundaries [1.00, 4.00] (Min: {working_df['Combined Weighted Score'].min():.2f}, Max: {working_df['Combined Weighted Score'].max():.2f}).",
         },
+        {
+            "check": "Inventory Management Policy Alignment Check",
+            "condition": "All 4 classes (A, B, C, D) mapped to standards for cycle counting, safety stock, and service level",
+            "passed": all(c in INVENTORY_POLICY_GUIDELINES for c in ["A", "B", "C", "D"]),
+            "detail": "Verified standards: A (Weekly count, 95%–98% CSL), B (Monthly count, 85%–90% CSL), C (Annual count, 70%–80% CSL), D (Do not count, No safety stock: donate/destroy/discount).",
+        },
     ]
 
     # 8. Assumptions
@@ -1967,7 +2052,10 @@ def classify_inventory_multicriteria(
         "Step 1 converts classes to numerical scores: A = 4, B = 3, C = 2, D = 1.",
         "Step 2 calculates Combined Weighted Score = 0.65(Sales Score) + 0.35(Hits Score).",
         "Step 3 assigns Final Inventory Class: A (4.00-3.25), B (3.24-2.50), C (2.49-1.75), D (< 1.75).",
-        "Items with $0 sales or 0 hits receive Class D (score 1) for that criterion.",
+        "Class A Policy: Cycle count every week; High CSL 95%–98%; dynamic statistical safety stock (SS = z * sigma_LTD); Continuous Review (s, Q).",
+        "Class B Policy: Cycle count once a month; Medium CSL 85%–90%; standard safety stock buffer; Periodic Review (R, S) / standard EOQ.",
+        "Class C Policy: Cycle count once a year; Low CSL 70%–80%; minimal buffer; Two-Bin / Min-Max / Kanban with bulk orders.",
+        "Class D Policy: Do not count; No safety stock; immediate disposition: donate, destroy, or discount; non-stock status.",
     ]
 
     return MulticriteriaClassificationResult(
@@ -1982,5 +2070,7 @@ def classify_inventory_multicriteria(
         classified_df=working_df,
         class_summary_df=summary_df,
         cross_tab_matrix=cross_tab,
+        policy_recommendations=INVENTORY_POLICY_GUIDELINES,
+        policy_summary_df=policy_summary_df,
     )
 
