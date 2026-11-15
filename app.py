@@ -1,458 +1,612 @@
-"""Supply Chain Analytics Inventory Decision Agent Application
+"""
+Supply Chain Analytics Inventory Decision Agent Application
+============================================================
+Dual-Mode Application:
+1. Streamlit Interactive Web Application (Default when run via 'streamlit run app.py')
+2. Rich Terminal / Command Line Interface (CLI mode when run via 'python app.py --cli')
 
-Dual-mode entry point:
-1. Streamlit Web Dashboard (interactive browser UI):
-     streamlit run app.py
-2. Rich Terminal CLI (interactive or single-query command line):
-     python app.py
-     python app.py --question "Annual demand is 10,000, order cost is $50, holding is $4. What is our EOQ?"
+Implements the 6-stage architecture:
+Customer Question -> Identify Model -> Extract Inputs -> Select Python Tool -> Calculate -> Verify -> Explain
 """
 
-from __future__ import annotations
-
-import argparse
 import sys
-from typing import Any, Dict, List, Optional, Tuple
-
+import argparse
+from typing import Optional
+import numpy as np
 import pandas as pd
+from scipy import stats
 
-from inventory_agent import InventoryDecisionAgent, ModelType
-
-
-# ---------------------------------------------------------------------------
-# CSV Dataset Analytics Engine
-# ---------------------------------------------------------------------------
-
-def analyze_inventory_csv(df: pd.DataFrame) -> Dict[str, Any]:
-    """Validate and compute summary analytics for an uploaded inventory dataframe.
-
-    Required columns:
-    - Product
-    - Category
-    - Units
-    - Unit Cost
-    """
-    required_cols = ["Product", "Category", "Units", "Unit Cost"]
-    missing_cols = [c for c in required_cols if c not in df.columns]
-    if missing_cols:
-        return {
-            "is_valid": False,
-            "missing_columns": missing_cols,
-            "num_rows": int(df.shape[0]),
-            "num_cols": int(df.shape[1]),
-            "column_names": list(df.columns),
-            "dataframe": df,
-        }
-
-    # Clean numeric columns without in-place mutation of caller's original reference
-    df_clean = df.copy()
-    df_clean["Units"] = pd.to_numeric(
-        df_clean["Units"].astype(str).str.replace(",", "").str.strip(), errors="coerce"
-    ).fillna(0)
-    df_clean["Unit Cost"] = pd.to_numeric(
-        df_clean["Unit Cost"].astype(str).str.replace("$", "").str.replace(",", "").str.strip(), errors="coerce"
-    ).fillna(0.0)
-
-    # 1. Total Units
-    total_units = float(df_clean["Units"].sum())
-
-    # 2. Average Unit Cost
-    avg_unit_cost = float(df_clean["Unit Cost"].mean()) if len(df_clean) > 0 else 0.0
-
-    # 3. Product with highest Units
-    if len(df_clean) > 0:
-        max_idx = df_clean["Units"].idxmax()
-        highest_units_product = str(df_clean.loc[max_idx, "Product"])
-        highest_units_count = float(df_clean.loc[max_idx, "Units"])
-    else:
-        highest_units_product = "N/A"
-        highest_units_count = 0.0
-
-    # 4. Group by Category and calculate total Units
-    category_summary = (
-        df_clean.groupby("Category", as_index=False)["Units"]
-        .sum()
-        .rename(columns={"Units": "Total Units"})
-        .sort_values(by="Total Units", ascending=False)
-    )
-
-    # 5. Inventory Value = Units * Unit Cost
-    df_clean["Inventory Value"] = df_clean["Units"] * df_clean["Unit Cost"]
-
-    # 6. Total Inventory Value across all products
-    total_inventory_value = float(df_clean["Inventory Value"].sum())
-
-    return {
-        "is_valid": True,
-        "missing_columns": [],
-        "num_rows": int(df.shape[0]),
-        "num_cols": int(df.shape[1]),
-        "column_names": list(df.columns),
-        "total_units": total_units,
-        "average_unit_cost": avg_unit_cost,
-        "highest_units_product": highest_units_product,
-        "highest_units_count": highest_units_count,
-        "category_summary": category_summary,
-        "total_inventory_value": total_inventory_value,
-        "analyzed_dataframe": df_clean,
-    }
+from inventory_agent import InventoryDecisionAgent
+import inventory_tools as tools
 
 
-# ---------------------------------------------------------------------------
-# CLI Mode (Rich Console Interface)
-# ---------------------------------------------------------------------------
+# ============================================================================
+# CLI INTERFACE IMPLEMENTATION
+# ============================================================================
 
-def run_cli(single_question: str | None = None) -> None:
-    try:
-        from rich import box
-        from rich.console import Console
-        from rich.panel import Panel
-        from rich.prompt import Prompt
-        from rich.table import Table
-    except ImportError:
-        print("Rich library not installed. Install with: pip install rich")
-        return
+def run_cli_mode(initial_question: Optional[str] = None):
+    """Runs the Inventory Decision Agent in interactive terminal mode."""
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.markdown import Markdown
 
     console = Console()
-    agent = InventoryDecisionAgent(use_llm_if_available=True)
-
-    sample_questions = [
-        "Annual demand is 12,000 units, ordering cost is $50 per order, and annual holding cost is $3 per unit. What is our EOQ and annual cost?",
-        "A supplier offers volume discounts: Tier 1 ($20) for 1-499 units, Tier 2 ($18) for 500-999 units, and Tier 3 ($16) for 1000+ units. Annual demand is 5,000 units, ordering cost is $49, and holding cost is 20% of unit price. What quantity should we order?",
-        "Daily demand averages 100 units with standard deviation of 15 units. Supplier lead time is 4 days. We target a 95% cycle service level. What safety stock and reorder point should we set?",
-        "We review inventory periodically every 14 days with lead time of 7 days. Daily demand is 50 units with std dev of 10. Service level is 95%. Currently we have 300 on hand and 150 on order. What is the order-up-to level and recommended order?",
-        "We sell commemorative event t-shirts for $25 that cost $10 to make. Unsold shirts can be salvaged for $3. Demand is normally distributed with mean 800 and std dev 120. How many shirts should we order in this single-period newsvendor model?",
-    ]
+    agent = InventoryDecisionAgent()
 
     console.print(
         Panel.fit(
-            "[bold cyan]Supply Chain Analytics - Inventory Decision Agent[/bold cyan]\n"
-            "[white]7-Stage Decision Architecture:[/white] "
-            "[yellow]Question -> Identify Model -> Extract Inputs -> Select Tool -> Calculate -> Verify -> Explain[/yellow]\n"
-            "[green]Models Supported:[/green] EOQ | Quantity Discount | Safety Stock & ROP | Fixed-Period Review | Newsvendor",
+            "[bold cyan]Supply Chain Analytics Inventory Decision Agent[/bold cyan]\n"
+            "[yellow]Architecture:[/yellow] Customer Question -> Identify Model -> Extract Inputs -> "
+            "Select Python Tool -> Calculate -> Verify -> Explain\n"
+            "[dim]Supported Models: 1. EOQ | 2. Quantity Discount | 3. Safety Stock & ROP | 4. Fixed-Period | 5. Newsvendor[/dim]",
             border_style="cyan",
         )
     )
 
-    def process_and_display(q_text: str) -> None:
-        console.print(f"\n[bold green]Processing Question:[/bold green] [italic]{q_text}[/italic]\n")
-        response = agent.process_question(q_text)
+    def process_query(q: str):
+        console.print(f"\n[bold green]Processing Query:[/bold green] {q}")
+        with console.status("[bold blue]Executing 6-stage agent pipeline...[/bold blue]"):
+            trace = agent.answer_question(q)
 
-        # Display Pipeline Trace
-        trace_table = Table(title="[bold yellow]7-Stage Pipeline Trace[/bold yellow]", box=box.ROUNDED)
-        trace_table.add_column("Step", justify="center", style="cyan", no_wrap=True)
-        trace_table.add_column("Stage Name", style="magenta", no_wrap=True)
-        trace_table.add_column("Status / Output Details", style="white")
-
-        for step in response.pipeline_trace:
-            details_str = ", ".join(f"{k}: {v}" for k, v in list(step.details.items())[:4])
-            trace_table.add_row(str(step.step_number), step.step_name, f"{step.description} ({details_str})")
-
-        console.print(trace_table)
-
-        # Display Structured Details Panel (Final Answer, Intermediate Calculations, Assumptions)
-        calc_res = response.calculation_result
-        if hasattr(calc_res, "assumptions") and calc_res.assumptions:
-            assumptions_str = "\n".join(f"  • {a}" for a in calc_res.assumptions)
-            console.print(
-                Panel(
-                    f"[bold yellow]Model Assumptions Identified:[/bold yellow]\n{assumptions_str}",
-                    title="[bold magenta]Supply Chain Assumptions[/bold magenta]",
-                    border_style="magenta",
-                )
-            )
-
-        # Display Verification Panel
-        ver = response.verification
-        ver_status = "[bold green]PASSED[/bold green]" if ver.is_valid else "[bold red]WARNING[/bold red]"
-        checks_text = "\n".join(f"  • {c}" for c in ver.checks_passed)
+        # Stage 1: Identify Model
         console.print(
             Panel(
-                f"[bold]Status:[/bold] {ver_status}\n[bold]Automated Checks:[/bold]\n{checks_text}",
-                title="[bold blue]Step 6: Mathematical Verification[/bold blue]",
-                border_style="blue",
+                f"[bold]Model:[/bold] {trace.model_name}\n"
+                f"[bold]Confidence:[/bold] {trace.confidence:.0%}\n"
+                f"[bold]Reasoning:[/bold] {trace.identification_reasoning}",
+                title="[bold yellow]Stage 1: Identify Model[/bold yellow]",
+                border_style="yellow",
             )
         )
 
-        # Display Executive Explanation
+        # Stage 2: Extract Inputs
+        input_table = Table(title="Stage 2: Extracted Numerical Inputs", border_style="magenta")
+        input_table.add_column("Parameter", style="cyan")
+        input_table.add_column("Extracted Value", style="white")
+        for k, v in trace.extracted_inputs.items():
+            input_table.add_row(str(k), str(v))
+        console.print(input_table)
+
+        # Stage 3: Select Tool
         console.print(
             Panel(
-                response.executive_explanation,
-                title="[bold green]Step 7: Executive Decision Explanation[/bold green]",
+                f"[bold green]Selected Tool Function:[/bold green] [underline]{trace.selected_tool_name}[/underline]",
+                title="[bold green]Stage 3: Select Python Tool[/bold green]",
                 border_style="green",
             )
         )
 
-    if single_question:
-        process_and_display(single_question)
+        # Stage 4 & 5: Calculate & Verify
+        status_color = "green" if trace.verification_passed else "red"
+        status_icon = "✅ PASSED" if trace.verification_passed else "⚠️ WARNING"
+        verif_text = f"[bold {status_color}]Verification Status: {status_icon}[/bold {status_color}]\n"
+        for msg in trace.verification_messages:
+            verif_text += f"- {msg}\n"
+
+        console.print(
+            Panel(
+                verif_text.strip(),
+                title="[bold blue]Stage 4 & 5: Calculation & Verification[/bold blue]",
+                border_style="blue",
+            )
+        )
+
+        # Stage 6: Explain
+        console.print("\n[bold cyan]Stage 6: Executive Report[/bold cyan]")
+        console.print(Markdown(trace.explanation_text))
+
+    if initial_question:
+        process_query(initial_question)
         return
 
+    # Interactive loop
+    sample_queries = [
+        "We sell 10,000 units a year. Placing an order costs $50, and holding cost is $2 per unit per year. What is our optimal batch size?",
+        "Annual demand is 5000 units. Ordering cost is $49. For 1-499 units price is $10, 500-999 units is $9.50, and 1000+ units is $9.00. Holding rate is 20%. Which discount tier is best?",
+        "Average daily demand is 80 units with standard deviation of 12. Lead time is 5 days. For a 95% service level, what should our safety stock and reorder point be?",
+        "We review inventory every 7 days with a 3 day lead time. Average daily demand is 50 with standard deviation 10. For a 95% service level and current stock of 120 units, what is our target level and order amount?",
+        "A seasonal jacket costs $50 to make and sells for $120. Unsold jackets clear at $30 at the end of the season. Demand has mean 400 and standard deviation 60. How many jackets should we stock under newsvendor?",
+    ]
+
+    console.print("\n[bold]Quick Demo Scenarios (enter 1-5 or type your own question, 'q' to quit):[/bold]")
+    for i, sq in enumerate(sample_queries, 1):
+        console.print(f"  [dim]{i}.[/dim] {sq[:90]}...")
+
     while True:
-        console.print("\n[bold]Select an action:[/bold]")
-        console.print("  [1-5] Run standard supply chain sample question")
-        console.print("  [C]   Enter custom natural-language question")
-        console.print("  [Q]   Quit")
-
-        choice = Prompt.ask("Your choice", default="1").strip().upper()
-        if choice in ["Q", "QUIT", "EXIT"]:
-            console.print("[cyan]Goodbye![/cyan]")
+        try:
+            user_input = console.input("\n[bold yellow]Ask inventory question > [/bold yellow]").strip()
+            if not user_input or user_input.lower() in ("q", "quit", "exit"):
+                console.print("[dim]Exiting Inventory Decision Agent. Goodbye![/dim]")
+                break
+            if user_input.isdigit() and 1 <= int(user_input) <= len(sample_queries):
+                user_input = sample_queries[int(user_input) - 1]
+            process_query(user_input)
+        except (KeyboardInterrupt, EOFError):
             break
-        elif choice in ["1", "2", "3", "4", "5"]:
-            idx = int(choice) - 1
-            process_and_display(sample_questions[idx])
-        elif choice == "C":
-            custom_q = Prompt.ask("\nEnter your inventory question")
-            if custom_q.strip():
-                process_and_display(custom_q.strip())
-        else:
-            console.print("[red]Invalid choice. Please select 1-5, C, or Q.[/red]")
 
 
-# ---------------------------------------------------------------------------
-# Streamlit Web UI Mode
-# ---------------------------------------------------------------------------
+# ============================================================================
+# STREAMLIT WEB INTERFACE IMPLEMENTATION
+# ============================================================================
 
-def run_streamlit() -> None:
-    import pandas as pd
+def run_streamlit_app():
     import streamlit as st
 
     st.set_page_config(
-        page_title="Supply Chain Inventory Decision Agent",
+        page_title="Supply Chain Analytics Inventory Decision Agent",
         page_icon="📦",
         layout="wide",
+        initial_sidebar_state="expanded",
     )
 
     st.title("📦 Supply Chain Analytics Inventory Decision Agent")
     st.markdown(
         """
-    **Autonomous Decision Architecture**:  
-    `Customer Question` ➔ `Identify Model` ➔ `Extract Inputs` ➔ `Select Python Tool` ➔ `Calculate` ➔ `Verify` ➔ `Explain`
-    """
+        **Interactive Decision Support System for Inventory Management**  
+        *Architecture:* `Customer Question → Identify Model → Extract Inputs → Select Python Tool → Calculate → Verify → Explain`
+        """
     )
 
-    agent = InventoryDecisionAgent(use_llm_if_available=True)
+    agent = InventoryDecisionAgent()
 
-    # Preset Questions
-    presets = {
+    # Preset scenarios for quick demo
+    preset_scenarios = {
+        "Custom Question": "",
         "1. Economic Order Quantity (EOQ)": (
-            "Annual demand is 12,000 units, ordering cost is $50 per order, and annual holding cost is $3 per unit. "
-            "Lead time is 5 days with 250 working days per year. What is our EOQ, order cycle, and total cost?"
+            "We sell 12,000 units annually. Each order costs $60 to place, and unit holding cost is $3 per year. "
+            "Our operating calendar has 250 work days. What is our optimal batch size, order frequency, and total inventory cost?"
         ),
-        "2. All-Units Quantity Discount": (
-            "Supplier offers volume discount price breaks: Tier 1 ($20) for 1-499 units, Tier 2 ($18) for 500-999 units, "
-            "and Tier 3 ($16) for 1000+ units. Annual demand is 5,000 units, ordering cost is $49, and holding cost is 20% of unit price. "
-            "What is our optimal order quantity?"
+        "2. Quantity Discount Model": (
+            "Annual demand is 5,000 units and ordering cost is $49. The supplier offers price breaks: "
+            "1 to 499 units at $10.00, 500 to 999 units at $9.50, and 1,000 or more units at $9.00. "
+            "Our holding cost rate is 20%. Which tier should we order to minimize total annual landed cost?"
         ),
         "3. Safety Stock & Reorder Point (Continuous Review)": (
-            "Average daily demand is 100 units with standard deviation of 15 units. Supplier lead time is 4 days. "
-            "We target a 95% cycle service level. What safety stock and reorder point should we set?"
+            "Average daily demand is 80 units with a standard deviation of 12 units. Supplier lead time is 5 days. "
+            "We target a 95% cycle service level. What should our safety stock and reorder point (ROP) be?"
         ),
-        "4. Fixed-Period Review (Order-Up-To Level)": (
-            "We review inventory periodically every 14 days with supplier lead time of 7 days. Daily demand is 50 units "
-            "with std dev of 10. Service level is 95%. Currently we have 300 on hand and 150 on order. "
-            "What is our order-up-to level and recommended order quantity?"
+        "4. Fixed-Period Review (Periodic Review / Order-Up-To)": (
+            "We review inventory every 7 days with a 3 day lead time. Average daily demand is 50 units with standard deviation of 10. "
+            "Target cycle service level is 95%. Current inventory on-hand plus on-order is 120 units. "
+            "What is our order-up-to level (M) and recommended order quantity?"
         ),
-        "5. Newsvendor (Single-Period Stochastic Demand)": (
-            "We sell seasonal commemorative jackets for $120. Cost to produce is $50. Unsold jackets can be salvaged for $20. "
-            "Expected demand is normally distributed with mean 500 and std dev 80. How many should we order in this single-period newsvendor model?"
+        "5. Newsvendor Model (Single-Period Stochastic)": (
+            "A seasonal ski jacket costs $50 to produce and sells for $130. Unsold jackets at the end of the season are marked down "
+            "to a salvage value of $30. Customer demand is normally distributed with a mean of 450 units and standard deviation of 75 units. "
+            "How many jackets should we stock under the newsvendor model to maximize expected profit?"
         ),
     }
 
-    st.sidebar.header("📋 Sample Scenarios")
-    selected_preset_key = st.sidebar.selectbox("Choose a Benchmark Scenario:", list(presets.keys()))
+    # Sidebar
+    st.sidebar.header("🎯 Scenario Presets")
+    selected_preset = st.sidebar.selectbox("Choose a sample scenario or enter custom query:", list(preset_scenarios.keys()))
+    default_text = preset_scenarios[selected_preset]
 
-    # Section called "Data Upload" as the last section in the sidebar
     st.sidebar.markdown("---")
-    st.sidebar.header("Data Upload")
-    uploaded_file = st.sidebar.file_uploader(
-        "Upload CSV File",
-        type=["csv"],
-        help="Upload an inventory CSV file with Product, Category, Units, and Unit Cost columns",
+    st.sidebar.markdown(
+        """
+        ### Supported Inventory Models
+        1. **EOQ (Wilson Formula):** Balances ordering and carrying costs.
+        2. **Quantity Discount:** Multi-tier price break landed cost optimization.
+        3. **Safety Stock & ROP:** Continuous review $(s, Q)$ with lead-time volatility.
+        4. **Fixed-Period Review:** Periodic review $(R, S)$ base stock replenishment.
+        5. **Newsvendor Model:** Critical fractile single-period profit optimization.
+        """
     )
 
-    custom_input = st.text_area(
-        "Enter your inventory question in plain English:",
-        value=presets[selected_preset_key],
-        height=110,
-    )
+    # DATA UPLOAD: Last section in the left sidebar
+    st.sidebar.markdown("---")
+    st.sidebar.header("📁 Data Upload")
+    uploaded_file = st.sidebar.file_uploader("Upload CSV File", type=["csv"])
 
-    col_btn1, col_btn2 = st.columns([1, 5])
-    with col_btn1:
-        submitted = st.button("🚀 Analyze & Decide", type="primary")
-
-    if submitted or custom_input:
-        with st.spinner("Executing 7-Stage Inventory Decision Agent Pipeline..."):
-            response = agent.process_question(custom_input)
-
-        st.success(f"Model Identified: **{response.model_name}** | Tool: `{response.selected_tool_name}`")
-
-        # Layout in Tabs
-        tab_summary, tab_pipeline, tab_structured, tab_math = st.tabs(
-            [
-                "📊 Executive Decision & Explanation",
-                "🔍 7-Stage Pipeline Trace",
-                "📋 Structured Output & Assumptions",
-                "🧮 Numerical Details & Verification",
-            ]
-        )
-
-        with tab_summary:
-            st.markdown(response.executive_explanation)
-
-            # Key metric cards
-            st.subheader("Key Decision Metrics")
-            m_cols = st.columns(4)
-
-            res = response.calculation_result
-            if response.model_type == ModelType.EOQ:
-                m_cols[0].metric("Optimal Order Qty (Q*)", f"{res.optimal_order_quantity:,.0f} units")
-                m_cols[1].metric("Orders per Year", f"{res.orders_per_year:.2f}")
-                m_cols[2].metric("Total Inventory Cost", f"${res.total_inventory_cost:,.2f}")
-                m_cols[3].metric("Reorder Point", f"{res.reorder_point} units" if res.reorder_point else "N/A")
-            elif response.model_type == ModelType.QUANTITY_DISCOUNT:
-                m_cols[0].metric("Optimal Order Qty (Q*)", f"{res.optimal_order_quantity:,.0f} units")
-                m_cols[1].metric("Optimal Tier", f"Tier {res.optimal_tier_id}")
-                m_cols[2].metric("Unit Price", f"${res.optimal_unit_price:.2f}")
-                m_cols[3].metric("Total Annual Cost", f"${res.optimal_total_cost:,.2f}")
-            elif response.model_type == ModelType.SAFETY_STOCK_ROP:
-                m_cols[0].metric("Safety Stock", f"{res.safety_stock:,.1f} units")
-                m_cols[1].metric("Reorder Point (ROP)", f"{res.reorder_point:,.1f} units")
-                m_cols[2].metric("Cycle Service Level", f"{res.service_level * 100:.1f}%")
-                m_cols[3].metric("Lead Time Demand", f"{res.lead_time_demand_mean:,.1f} units")
-            elif response.model_type == ModelType.FIXED_PERIOD_REVIEW:
-                m_cols[0].metric("Order-Up-To Level (M)", f"{res.order_up_to_level_M:,.1f} units")
-                m_cols[1].metric("Safety Stock", f"{res.safety_stock:,.1f} units")
-                m_cols[2].metric("Recommended Order (q)", f"{res.recommended_order_quantity:,.0f} units" if res.recommended_order_quantity is not None else "N/A")
-                m_cols[3].metric("Protection Interval", f"{res.protection_interval} days")
-            elif response.model_type == ModelType.NEWSVENDOR:
-                m_cols[0].metric("Optimal Production Q*", f"{res.optimal_order_quantity:,.0f} units")
-                m_cols[1].metric("Critical Ratio", f"{res.critical_ratio * 100:.2f}%")
-                m_cols[2].metric("Expected Profit", f"${res.expected_profit:,.2f}")
-                m_cols[3].metric("Expected Sales", f"{res.expected_sales:,.1f} units")
-
-        with tab_pipeline:
-            st.subheader("Execution Trace: Step-by-Step")
-            for step in response.pipeline_trace:
-                with st.expander(f"Step {step.step_number}: {step.step_name} - {step.description}", expanded=True):
-                    st.json(step.details)
-
-        with tab_structured:
-            st.subheader("Deterministic Structured Tool Output")
-            col_final, col_inter = st.columns(2)
-            with col_final:
-                st.markdown("#### Final Answer")
-                if hasattr(res, "final_answer"):
-                    st.json(res.final_answer)
-            with col_inter:
-                st.markdown("#### Intermediate Calculations")
-                if hasattr(res, "intermediate_calculations"):
-                    st.json(res.intermediate_calculations)
-
-            st.markdown("#### Supply Chain Model Assumptions")
-            if hasattr(res, "assumptions"):
-                for a in res.assumptions:
-                    st.write(f"- 📌 {a}")
-
-        with tab_math:
-            st.subheader("Automated Mathematical Verification")
-            v = response.verification
-            if v.is_valid:
-                st.success("✅ All mathematical bounds, cost convexities, and optimality criteria verified.")
-            else:
-                st.warning("⚠️ Verification checks raised warnings.")
-
-            for check in v.checks_passed:
-                st.write(f"- ✔️ {check}")
-            for warning in v.warnings:
-                st.write(f"- ⚠️ {warning}")
-
-            if v.sensitivity_analysis:
-                st.subheader("Sensitivity Analysis")
-                st.json(v.sensitivity_analysis)
-
-    # -----------------------------------------------------------------------
-    # Uploaded CSV Data Processing & Analysis
-    # -----------------------------------------------------------------------
+    # DATA PROCESSING & ANALYSIS SECTION (Main Page)
     if uploaded_file is not None:
+        st.markdown("---")
         try:
-            df_raw = pd.read_csv(uploaded_file)
-            analysis = analyze_inventory_csv(df_raw)
+            # 1. Read CSV into pandas DataFrame
+            df = pd.read_csv(uploaded_file)
 
-            st.markdown("---")
-            st.header("📊 Uploaded Inventory Dataset Analysis")
+            num_rows, num_cols = df.shape
+            col_names = df.columns.tolist()
+            cols_lower = {c.strip().lower(): c for c in col_names}
 
-            if not analysis["is_valid"]:
+            # Detect schema capabilities
+            has_classification_cols = any(
+                c in cols_lower for c in ["sales ($)", "sales", "sales$", "revenue", "sales_dollar"]
+            ) and any(
+                c in cols_lower for c in ["hits", "hit", "picks", "pick count", "transactions"]
+            )
+
+            has_portfolio_cols = all(
+                c in df.columns for c in ["Product", "Category", "Units", "Unit Cost"]
+            )
+
+            if not has_classification_cols and not has_portfolio_cols:
                 st.error(
-                    f"⚠️ Missing required columns in uploaded CSV: **{', '.join(analysis['missing_columns'])}**.\n\n"
-                    f"Expected columns: **Product, Category, Units, Unit Cost**."
+                    f"⚠️ Uploaded CSV schema not recognized.\n\n"
+                    f"**Detected Columns:** {', '.join(col_names)}\n\n"
+                    f"**Supported File Schemas:**\n"
+                    f"1. **Inventory Classification Schema:** `Item Number`, `Item Name`, `UoM`, `Sales ($)`, `Hits`\n"
+                    f"2. **Inventory Portfolio Schema:** `Product`, `Category`, `Units`, `Unit Cost`"
                 )
-                st.write(f"**Number of Rows:** {analysis['num_rows']} | **Number of Columns:** {analysis['num_cols']}")
-                st.write(f"**Column Names Present:** `{', '.join(analysis['column_names'])}`")
-                st.subheader("Uploaded Raw Dataframe")
-                st.dataframe(df_raw, use_container_width=True)
-            else:
-                # 4 & 5. Display dataset dimensions and column names
-                st.subheader("Dataset Dimensions & Schema")
-                d_c1, d_c2, d_c3 = st.columns([1, 1, 3])
-                d_c1.metric("Number of Rows", f"{analysis['num_rows']:,}")
-                d_c2.metric("Number of Columns", f"{analysis['num_cols']:,}")
-                d_c3.write(f"**Column Names:** `{', '.join(analysis['column_names'])}`")
 
-                # Analytical Summary Metrics
-                st.subheader("Inventory Metrics Summary")
-                kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-                kpi1.metric("Total Units", f"{analysis['total_units']:,.0f}")
-                kpi2.metric("Average Unit Cost", f"${analysis['average_unit_cost']:,.2f}")
-                kpi3.metric(
-                    "Product with Highest Units",
-                    analysis["highest_units_product"],
-                    delta=f"{analysis['highest_units_count']:,.0f} units",
+            # ================================================================
+            # CAPABILITY 1: MULTICRITERIA INVENTORY CLASSIFICATION (A, B, C, D)
+            # ================================================================
+            if has_classification_cols:
+                st.subheader("🏷️ Multicriteria Inventory Classification (Sales & Hits)")
+                st.caption(
+                    "Classifies inventory items into **A, B, C, and D** classes based on joint "
+                    "financial volume (`Sales ($)`) and operational pick velocity (`Hits`)."
                 )
-                kpi4.metric("Total Inventory Value", f"${analysis['total_inventory_value']:,.2f}")
 
-                # Total Units by Category
-                st.subheader("Total Units by Category")
+                # Execute classification via deterministic tools
+                class_res = tools.classify_inventory_multicriteria(df)
+                enriched_df = class_res.classified_df
+                summary_df = class_res.class_summary_df
+                cross_tab = class_res.cross_tab_matrix
+
+                # Summary KPIs
+                kcol1, kcol2, kcol3, kcol4, kcol5 = st.columns(5)
+                with kcol1:
+                    st.metric("Total Items (SKUs)", f"{len(enriched_df):,}")
+                with kcol2:
+                    st.metric("Class A SKUs", f"{class_res.final_answer['class_A_skus']:,}", f"{class_res.final_answer['class_A_sales_percent']:.1f}% Sales")
+                with kcol3:
+                    st.metric("Class B SKUs", f"{class_res.final_answer['class_B_skus']:,}")
+                with kcol4:
+                    st.metric("Class C SKUs", f"{class_res.final_answer['class_C_skus']:,}")
+                with kcol5:
+                    st.metric("Class D (Dead/Dormant)", f"{class_res.final_answer['class_D_skus']:,}")
+
+                # Class Breakdown Table & Cross-Tabulation Matrix
+                ccol1, ccol2 = st.columns([3, 2])
+                with ccol1:
+                    st.markdown("#### Multicriteria Class Distribution")
+                    st.dataframe(
+                        summary_df.style.format({
+                            "SKU Count": "{:,}",
+                            "% of SKUs": "{:.1f}%",
+                            "Total Sales ($)": "${:,.2f}",
+                            "% of Sales": "{:.1f}%",
+                            "Total Hits": "{:,.0f}",
+                            "% of Hits": "{:.1f}%",
+                        }),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                with ccol2:
+                    st.markdown("#### 2D Criteria Decision Matrix (Sales × Hits)")
+                    st.dataframe(cross_tab, use_container_width=True)
+
+                # Class Filter and Display Enriched DataFrame
+                st.markdown("#### Classified Inventory Dataset")
+                filter_class = st.radio(
+                    "Filter by Multicriteria Class:",
+                    ["All Items", "Class A", "Class B", "Class C", "Class D"],
+                    horizontal=True,
+                )
+
+                if filter_class != "All Items":
+                    target_c = filter_class.split(" ")[-1]
+                    display_class_df = enriched_df[enriched_df["Multicriteria Class"] == target_c].copy()
+                else:
+                    display_class_df = enriched_df.copy()
+
+                # Identify sales column for formatting
+                disp_sales_col = class_res.inputs_extracted["sales_column"]
+                disp_hits_col = class_res.inputs_extracted["hits_column"]
+
+                format_dict = {
+                    disp_sales_col: "${:,.2f}",
+                    disp_hits_col: "{:,.0f}",
+                    "Sales Share (%)": "{:.2f}%",
+                    "Cum Sales Share (%)": "{:.2f}%",
+                    "Hits Share (%)": "{:.2f}%",
+                    "Cum Hits Share (%)": "{:.2f}%",
+                }
+                # Add any existing portfolio currency columns if present
+                if "Unit Cost" in display_class_df.columns:
+                    format_dict["Unit Cost"] = "${:,.2f}"
+                if "Inventory Value" in display_class_df.columns:
+                    format_dict["Inventory Value"] = "${:,.2f}"
+
                 st.dataframe(
-                    analysis["category_summary"],
+                    display_class_df.style.format(format_dict),
                     use_container_width=True,
-                    column_config={
-                        "Total Units": st.column_config.NumberColumn(format="%d"),
-                    },
                 )
 
-                # Augmented Dataframe with Inventory Value column
-                st.subheader("Inventory Data (including Calculated Inventory Value)")
-                st.dataframe(
-                    analysis["analyzed_dataframe"],
-                    use_container_width=True,
-                    column_config={
-                        "Units": st.column_config.NumberColumn(format="%d"),
-                        "Unit Cost": st.column_config.NumberColumn(format="$%.2f"),
-                        "Inventory Value": st.column_config.NumberColumn(format="$%.2f"),
-                    },
+            # ================================================================
+            # CAPABILITY 2: EXISTING PORTFOLIO ANALYSIS
+            # ================================================================
+            if has_portfolio_cols:
+                st.subheader("📊 Inventory Portfolio Analysis (Units & Value)")
+
+                st.info(
+                    f"**Dataset Overview:** {num_rows:,} rows × {num_cols} columns  |  "
+                    f"**Columns:** {', '.join(col_names)}"
                 )
+
+                # Ensure numeric types using pandas
+                df["Units"] = pd.to_numeric(df["Units"], errors="coerce").fillna(0)
+                df["Unit Cost"] = pd.to_numeric(df["Unit Cost"], errors="coerce").fillna(0.0)
+
+                # 1. Calculate total Units
+                total_units = float(df["Units"].sum())
+
+                # 2. Calculate average Unit Cost
+                avg_unit_cost = float(df["Unit Cost"].mean())
+
+                # 3. Identify Product with highest Units
+                idx_highest = df["Units"].idxmax()
+                highest_product_name = str(df.loc[idx_highest, "Product"])
+                highest_product_units = float(df.loc[idx_highest, "Units"])
+
+                # 4. Group data by Category and calculate total Units for each Category
+                units_by_category = df.groupby("Category")["Units"].sum().reset_index()
+                units_by_category.columns = ["Category", "Total Units"]
+                units_by_category = units_by_category.sort_values(by="Total Units", ascending=False)
+
+                # 5. Create new calculated column: Inventory Value = Units * Unit Cost
+                df["Inventory Value"] = df["Units"] * df["Unit Cost"]
+
+                # 6. Calculate total Inventory Value across all products
+                total_inventory_value = float(df["Inventory Value"].sum())
+
+                # RESULTS DISPLAY
+                mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+                with mcol1:
+                    st.metric("Total Units", f"{total_units:,.0f}")
+                with mcol2:
+                    st.metric("Average Unit Cost", f"${avg_unit_cost:,.2f}")
+                with mcol3:
+                    st.metric("Product with Highest Units", f"{highest_product_name}", f"{highest_product_units:,.0f} units")
+                with mcol4:
+                    st.metric("Total Inventory Value", f"${total_inventory_value:,.2f}")
+
+                # Display category breakdown and full dataframe with calculated column
+                col_cat, col_table = st.columns([1, 2])
+                with col_cat:
+                    st.markdown("#### Total Units by Category")
+                    st.dataframe(
+                        units_by_category.style.format({"Total Units": "{:,.0f}"}),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                with col_table:
+                    st.markdown("#### Uploaded Dataframe (with Calculated Inventory Value)")
+                    formatted_df = df.copy()
+                    formatted_display = formatted_df.style.format({
+                        "Units": "{:,.0f}",
+                        "Unit Cost": "${:,.2f}",
+                        "Inventory Value": "${:,.2f}",
+                    })
+                    st.dataframe(formatted_display, use_container_width=True)
+
         except Exception as e:
-            st.error(f"Error reading or processing uploaded CSV file: {e}")
+            st.error(f"Error processing uploaded CSV file: {str(e)}")
+
+        st.markdown("---")
+
+    # Input Area
+    st.subheader("💬 Ask Your Inventory Question")
+    user_query = st.text_area(
+        "Enter your supply chain question in plain natural language:",
+        value=default_text if default_text else (
+            "We sell 10,000 units a year. Placing an order costs $50, and holding cost is $2 per unit per year. "
+            "What is our optimal batch size?"
+        ),
+        height=100,
+    )
+
+    col_btn1, col_btn2 = st.columns([1, 4])
+    with col_btn1:
+        run_button = st.button("🚀 Run Decision Agent", type="primary", use_container_width=True)
+
+    if run_button or user_query:
+        with st.spinner("Executing 6-stage decision pipeline..."):
+            trace = agent.answer_question(user_query)
+
+        st.markdown("---")
+        st.subheader("🔍 Execution Trace (6-Stage Pipeline)")
+
+        # Stepper visualization columns
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("1. Identified Model", trace.model_name)
+        with col2:
+            st.metric("Confidence", f"{trace.confidence:.0%}")
+        with col3:
+            st.metric("3. Selected Python Tool", trace.selected_tool_name.split(".")[-1])
+        with col4:
+            status_emoji = "✅ Passed" if trace.verification_passed else "⚠️ Warning"
+            st.metric("5. Verification", status_emoji)
+
+        # Tabs for details
+        tab_summary, tab_pipeline, tab_charts, tab_sensitivity = st.tabs([
+            "📋 Decision & Explanation",
+            "⚙️ Pipeline Trace (Stages 1-5)",
+            "📊 Visual Analytics",
+            "🎛️ What-If Sensitivity",
+        ])
+
+        # TAB 1: Executive Explanation
+        with tab_summary:
+            st.markdown(trace.explanation_text)
+
+        # TAB 2: Deep Pipeline Trace
+        with tab_pipeline:
+            st.markdown("#### Stage 1: Model Identification")
+            st.info(f"**Identified Model:** {trace.model_name}\n\n**Reasoning:** {trace.identification_reasoning}")
+
+            st.markdown("#### Stage 2: Extracted Numerical Inputs")
+            input_df = pd.DataFrame(
+                [{"Parameter": k, "Extracted Value": str(v)} for k, v in trace.extracted_inputs.items()]
+            )
+            st.dataframe(input_df, use_container_width=True)
+
+            st.markdown("#### Stage 3: Tool Dispatch")
+            st.code(f"Selected Callable: {trace.selected_tool_name}(**extracted_inputs)", language="python")
+
+            st.markdown("#### Stage 4 & 5: Calculation Result & Mathematical Verification")
+            if trace.verification_passed:
+                st.success("Mathematical and operational domain verification: PASSED")
+            else:
+                st.warning("Mathematical verification produced alerts:")
+            for msg in trace.verification_messages:
+                st.write(f"- {msg}")
+
+        # TAB 3: Visual Analytics
+        with tab_charts:
+            st.markdown("#### Interactive Model Visualization")
+            model = trace.identified_model
+
+            if model == "eoq" and trace.calculation_result:
+                res: tools.EOQResult = trace.calculation_result
+                d = trace.extracted_inputs.get("annual_demand", 10000)
+                s = trace.extracted_inputs.get("order_cost", 50)
+                h = trace.extracted_inputs.get("holding_cost", 2.0)
+
+                q_opt = res.optimal_order_quantity
+                q_range = np.linspace(max(10, q_opt * 0.2), q_opt * 2.2, 100)
+                order_costs = (d / q_range) * s
+                holding_costs = (q_range / 2.0) * h
+                total_costs = order_costs + holding_costs
+
+                chart_df = pd.DataFrame({
+                    "Order Quantity (Q)": q_range,
+                    "Annual Ordering Cost": order_costs,
+                    "Annual Holding Cost": holding_costs,
+                    "Total Inventory Cost": total_costs,
+                }).set_index("Order Quantity (Q)")
+
+                st.line_chart(chart_df)
+                st.caption(f"EOQ trade-off curve. Minimum occurs at Q* = {q_opt:.0f} where holding cost equals ordering cost.")
+
+            elif model == "quantity_discount" and trace.calculation_result:
+                res: tools.QuantityDiscountResult = trace.calculation_result
+                tier_data = []
+                for t in res.tier_evaluations:
+                    tier_data.append({
+                        "Tier": f"Tier {t.tier_index + 1} (${t.unit_price:.2f})",
+                        "Purchasing Cost": t.annual_purchasing_cost,
+                        "Ordering Cost": t.annual_ordering_cost,
+                        "Holding Cost": t.annual_holding_cost,
+                        "Total Cost": t.total_annual_cost,
+                    })
+                tdf = pd.DataFrame(tier_data).set_index("Tier")
+                st.bar_chart(tdf[["Purchasing Cost", "Ordering Cost", "Holding Cost"]])
+                st.caption("Breakdown of purchasing, ordering, and holding costs across discount brackets.")
+
+            elif model == "safety_stock_rop" and trace.calculation_result:
+                res: tools.SafetyStockROPResult = trace.calculation_result
+                mu_ltd = res.expected_lead_time_demand
+                sig_ltd = res.std_lead_time_demand
+                rop = res.reorder_point
+
+                x = np.linspace(max(0, mu_ltd - 3.5 * sig_ltd), mu_ltd + 3.5 * sig_ltd, 150)
+                y = stats.norm.pdf(x, mu_ltd, sig_ltd)
+
+                chart_df = pd.DataFrame({"Lead Time Demand": x, "Probability Density": y}).set_index("Lead Time Demand")
+                st.line_chart(chart_df)
+                st.caption(
+                    f"Lead Time Demand Distribution: Mean = {mu_ltd:.1f}, "
+                    f"Safety Stock = {res.safety_stock:.1f}, ROP = {rop:.1f} (CSL = {res.cycle_service_level:.0%})."
+                )
+
+            elif model == "fixed_period_review" and trace.calculation_result:
+                res: tools.FixedPeriodReviewResult = trace.calculation_result
+                st.bar_chart(pd.DataFrame({
+                    "Component": ["Current Inventory", "Order Quantity Placed", "Expected Demand (R+L)", "Safety Stock"],
+                    "Units": [res.current_inventory, res.recommended_order_quantity, res.expected_demand_protection_period, res.safety_stock],
+                }).set_index("Component"))
+
+            elif model == "newsvendor" and trace.calculation_result:
+                res: tools.NewsvendorResult = trace.calculation_result
+                mu = trace.extracted_inputs.get("demand_mean", 500)
+                sigma = trace.extracted_inputs.get("demand_std", 100)
+                q_opt = res.optimal_order_quantity
+
+                x = np.linspace(max(0, mu - 3.5 * sigma), mu + 3.5 * sigma, 150)
+                y = stats.norm.pdf(x, mu, sigma)
+                chart_df = pd.DataFrame({"Demand": x, "Probability Density": y}).set_index("Demand")
+                st.line_chart(chart_df)
+                st.caption(f"Normal Demand Distribution: Optimal Order Q* = {q_opt:.0f} (Critical Ratio = {res.critical_ratio:.1%}).")
+
+        # TAB 4: What-If Sensitivity
+        with tab_sensitivity:
+            st.markdown("#### Interactive What-If Parameter Tuning")
+            model = trace.identified_model
+
+            if model == "eoq":
+                col_s1, col_s2, col_s3 = st.columns(3)
+                with col_s1:
+                    adj_d = st.number_input("Annual Demand (D)", value=float(trace.extracted_inputs.get("annual_demand", 10000.0)), step=500.0)
+                with col_s2:
+                    adj_s = st.number_input("Order Cost (S)", value=float(trace.extracted_inputs.get("order_cost", 50.0)), step=5.0)
+                with col_s3:
+                    adj_h = st.number_input("Holding Cost (H)", value=float(trace.extracted_inputs.get("holding_cost", 2.0)), step=0.2)
+
+                adj_res = tools.calculate_eoq(annual_demand=adj_d, order_cost=adj_s, holding_cost=adj_h)
+                st.metric("Adjusted EOQ (Q*)", f"{adj_res.optimal_order_quantity:,.0f} units")
+                st.metric("Adjusted Total Inventory Cost", f"${adj_res.total_annual_inventory_cost:,.2f}")
+
+            elif model == "safety_stock_rop":
+                col_s1, col_s2 = st.columns(2)
+                with col_s1:
+                    adj_sl = st.slider("Target Service Level (CSL)", min_value=0.80, max_value=0.999, value=float(trace.extracted_inputs.get("service_level", 0.95)), step=0.01)
+                with col_s2:
+                    adj_lt = st.number_input("Lead Time (days)", value=float(trace.extracted_inputs.get("lead_time", 5.0)), step=1.0)
+
+                adj_res = tools.calculate_safety_stock_rop(
+                    avg_demand_per_period=float(trace.extracted_inputs.get("avg_demand_per_period", 80.0)),
+                    std_demand_per_period=float(trace.extracted_inputs.get("std_demand_per_period", 12.0)),
+                    lead_time=adj_lt,
+                    service_level=adj_sl,
+                )
+                st.metric("Adjusted Safety Stock", f"{adj_res.safety_stock:,.0f} units")
+                st.metric("Adjusted Reorder Point (ROP)", f"{adj_res.reorder_point:,.0f} units")
+
+            elif model == "newsvendor":
+                col_s1, col_s2 = st.columns(2)
+                with col_s1:
+                    adj_p = st.number_input("Selling Price ($)", value=float(trace.extracted_inputs.get("selling_price", 120.0)), step=5.0)
+                with col_s2:
+                    adj_c = st.number_input("Unit Cost ($)", value=float(trace.extracted_inputs.get("unit_cost", 50.0)), step=5.0)
+
+                adj_res = tools.calculate_newsvendor(
+                    unit_cost=adj_c,
+                    selling_price=adj_p,
+                    demand_mean=float(trace.extracted_inputs.get("demand_mean", 400.0)),
+                    demand_std=float(trace.extracted_inputs.get("demand_std", 60.0)),
+                    salvage_value=float(trace.extracted_inputs.get("salvage_value", 30.0)),
+                )
+                st.metric("Adjusted Stocking Q*", f"{adj_res.optimal_order_quantity:,.0f} units")
+                st.metric("Adjusted Expected Profit", f"${adj_res.expected_profit:,.2f}")
+            else:
+                st.info("Direct slider adjustments are enabled for EOQ, Safety Stock & ROP, and Newsvendor.")
 
 
-# ---------------------------------------------------------------------------
-# Application Entry Point
-# ---------------------------------------------------------------------------
+# ============================================================================
+# ENTRY POINT DISPATCHER
+# ============================================================================
 
 if __name__ == "__main__":
-    # If launched with 'streamlit run app.py'
-    if "streamlit" in sys.modules and any("streamlit" in arg for arg in sys.argv):
-        run_streamlit()
+    parser = argparse.ArgumentParser(description="Supply Chain Analytics Inventory Decision Agent")
+    parser.add_argument("--cli", action="store_true", help="Run in interactive command-line mode")
+    parser.add_argument("--question", type=str, default=None, help="Execute a single natural language question via CLI")
+    args, unknown = parser.parse_known_args()
+
+    # If --cli or --question is passed, or if run without streamlit runtime
+    is_streamlit = "streamlit" in sys.modules and ("streamlit.web.cli" in sys.modules or "streamlit.runtime" in sys.modules)
+
+    if args.cli or args.question:
+        run_cli_mode(initial_question=args.question)
+    elif is_streamlit:
+        run_streamlit_app()
     else:
-        # Check if user requested Streamlit or CLI
-        parser = argparse.ArgumentParser(description="Supply Chain Analytics Inventory Decision Agent")
-        parser.add_argument("--question", "-q", type=str, help="Single inventory question to process")
-        parser.add_argument("--web", action="store_true", help="Launch Streamlit Web UI")
-        args = parser.parse_args()
-
-        if args.web:
-            import subprocess
-            subprocess.run([sys.executable, "-m", "streamlit", "run", __file__])
-        else:
-            run_cli(single_question=args.question)
-
+        # If user ran `python app.py` directly, default to CLI mode with instructions
+        run_cli_mode()

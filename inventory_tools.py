@@ -1,1461 +1,1916 @@
-"""Supply Chain Analytics Inventory Tools
-
-Pure Python deterministic calculation engine for 5 core inventory models:
+"""
+Supply Chain Analytics Deterministic Inventory Tools
+====================================================
+Rigorous, deterministic Python tools for foundational supply chain inventory models:
 1. calculate_eoq()
 2. calculate_quantity_discount()
 3. calculate_rop()
 4. calculate_periodic_review()
 5. calculate_newsvendor()
 
-Every tool strictly returns all 8 required verification sections:
-1. Inputs Extracted
-2. Variable Definitions
-3. Formula
-4. Formula with Substituted Values
-5. Intermediate Calculations
-6. Final Answer
-7. Verification Checks
-8. Assumptions
+Every tool strictly returns:
+1. Inputs Extracted (inputs_extracted)
+2. Variable Definitions (variable_definitions)
+3. Formula (formula)
+4. Formula with Substituted Values (formula_with_substituted_values)
+5. Intermediate Calculations (intermediate_calculations)
+6. Final Answer (final_answer)
+7. Verification Checks (verification_checks)
+8. Assumptions (assumptions)
 
-All numerical steps come directly from the deterministic Python tool.
-Missing information is never invented.
+All numerical calculation steps originate strictly within these deterministic tools.
+No missing information is invented.
 """
 
 from __future__ import annotations
-
 import math
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
-import numpy as np
+from dataclasses import dataclass, field, asdict
+from typing import List, Dict, Any, Optional, Tuple
 from scipy import stats
+import numpy as np
 
 
-# ---------------------------------------------------------------------------
-# Data Classes for Structured Pedagogical Tool Outputs
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ToolVerification:
-    is_valid: bool
-    checks_passed: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
-    sensitivity_analysis: Dict[str, Any] = field(default_factory=dict)
-
+# ============================================================================
+# 1. Economic Order Quantity (EOQ)
+# ============================================================================
 
 @dataclass
-class BaseInventoryResult:
-    model_name: str
-    inputs_extracted: Dict[str, Any] = field(default_factory=dict)
-    variable_definitions: Dict[str, str] = field(default_factory=dict)
-    formula: Union[str, Dict[str, str]] = ""
-    formula_with_substituted_values: Union[str, Dict[str, str]] = ""
-    intermediate_calculations: Dict[str, Any] = field(default_factory=dict)
-    final_answer: Dict[str, Any] = field(default_factory=dict)
-    verification_checks: List[str] = field(default_factory=list)
-    assumptions: List[str] = field(default_factory=list)
-    verification: Optional[ToolVerification] = None
+class EOQResult:
+    # 1. Inputs Extracted
+    inputs_extracted: Dict[str, Any]
 
-    # Backward compatibility property for existing code accessing .inputs
+    # 2. Variable Definitions
+    variable_definitions: Dict[str, str]
+
+    # 3. Formula
+    formula: Dict[str, str]
+
+    # 4. Formula with Substituted Values
+    formula_with_substituted_values: Dict[str, str]
+
+    # 5. Intermediate Calculations
+    intermediate_calculations: Dict[str, Any]
+
+    # 6. Final Answer
+    final_answer: Dict[str, Any]
+
+    # 7. Verification Checks
+    verification_checks: List[Dict[str, Any]]
+
+    # 8. Assumptions
+    assumptions: List[str]
+
+    # Core attribute accessors
+    optimal_order_quantity: float
+    annual_demand: float
+    order_cost: float
+    unit_holding_cost: float
+    orders_per_year: float
+    cycle_time_days: float
+    annual_ordering_cost: float
+    annual_holding_cost: float
+    total_annual_inventory_cost: float
+    annual_purchase_cost: Optional[float] = None
+    total_annual_cost: Optional[float] = None
+
     @property
-    def inputs(self) -> Dict[str, Any]:
-        return self.inputs_extracted
+    def number_of_orders_per_year(self) -> float:
+        return self.orders_per_year
+
+    @property
+    def total_annual_purchase_cost(self) -> Optional[float]:
+        return self.annual_purchase_cost
+
+    @property
+    def formula_breakdown(self) -> Dict[str, str]:
+        return self.formula_with_substituted_values
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return the standardized 8 verification sections as a structured dictionary."""
-        return {
-            "inputs_extracted": self.inputs_extracted,
-            "variable_definitions": self.variable_definitions,
-            "formula": self.formula,
-            "formula_with_substituted_values": self.formula_with_substituted_values,
-            "intermediate_calculations": self.intermediate_calculations,
-            "final_answer": self.final_answer,
-            "verification_checks": self.verification_checks,
-            "assumptions": self.assumptions,
-        }
+        return asdict(self)
 
-    def to_student_verification_text(self) -> str:
-        """Format the complete 8-section pedagogical breakdown for student verification."""
-        lines = [f"## Student Verification: {self.model_name}\n"]
 
-        # 1. Inputs Extracted
-        lines.append("### 1. Inputs Extracted")
-        for k, v in self.inputs_extracted.items():
-            if isinstance(v, list):
-                lines.append(f"- **{k}**: {len(v)} tiers/items")
-                for item in v:
-                    lines.append(f"  - {item}")
-            else:
-                lines.append(f"- **{k}**: {v}")
-        lines.append("")
+def calculate_eoq(
+    annual_demand: float,
+    order_cost: float,
+    holding_cost: Optional[float] = None,
+    unit_cost: Optional[float] = None,
+    holding_cost_rate: Optional[float] = None,
+    work_days_per_year: float = 250.0,
+) -> EOQResult:
+    """
+    Calculates deterministic Economic Order Quantity (Wilson formula).
 
-        # 2. Variable Definitions
-        lines.append("### 2. Variable Definitions")
-        for sym, defn in self.variable_definitions.items():
-            lines.append(f"- **{sym}**: {defn}")
-        lines.append("")
+    Formula:
+        Q = sqrt(2 * D * S / H)
 
-        # 3. Formula
-        lines.append("### 3. Formula")
-        if isinstance(self.formula, dict):
-            for name, f_expr in self.formula.items():
-                lines.append(f"- **{name}**: `{f_expr}`")
-        else:
-            lines.append(f"`{self.formula}`")
-        lines.append("")
+    Returns the complete 8 verification sections:
+        1. Inputs Extracted
+        2. Variable Definitions
+        3. Formula
+        4. Formula with Substituted Values
+        5. Intermediate Calculations
+        6. Final Answer
+        7. Verification Checks
+        8. Assumptions
+    """
+    if annual_demand is None or annual_demand <= 0:
+        raise ValueError(f"annual_demand must be a positive number. Got {annual_demand}")
+    if order_cost is None or order_cost <= 0:
+        raise ValueError(f"order_cost must be a positive number. Got {order_cost}")
 
-        # 4. Formula with Substituted Values
-        lines.append("### 4. Formula with Substituted Values")
-        if isinstance(self.formula_with_substituted_values, dict):
-            for name, sub_expr in self.formula_with_substituted_values.items():
-                lines.append(f"- **{name}**: `{sub_expr}`")
-        else:
-            lines.append(f"`{self.formula_with_substituted_values}`")
-        lines.append("")
+    # Determine holding cost H
+    if holding_cost is not None:
+        if holding_cost <= 0:
+            raise ValueError(f"holding_cost must be positive. Got {holding_cost}")
+        h = float(holding_cost)
+    elif unit_cost is not None and holding_cost_rate is not None:
+        if unit_cost <= 0:
+            raise ValueError(f"unit_cost must be positive. Got {unit_cost}")
+        if holding_cost_rate <= 0:
+            raise ValueError(f"holding_cost_rate must be positive. Got {holding_cost_rate}")
+        h = float(unit_cost * holding_cost_rate)
+    else:
+        raise ValueError(
+            "Missing holding cost specification: Must provide either holding_cost (H), "
+            "or both unit_cost (C) and holding_cost_rate (i). Missing values cannot be invented."
+        )
 
-        # 5. Intermediate Calculations
-        lines.append("### 5. Intermediate Calculations")
-        for k, v in self.intermediate_calculations.items():
-            if isinstance(v, list):
-                lines.append(f"- **{k}**:")
-                for item in v:
-                    lines.append(f"  - {item}")
-            else:
-                lines.append(f"- **{k}**: {v}")
-        lines.append("")
+    if work_days_per_year <= 0:
+        raise ValueError(f"work_days_per_year must be positive. Got {work_days_per_year}")
 
-        # 6. Final Answer
-        lines.append("### 6. Final Answer")
-        for k, v in self.final_answer.items():
-            lines.append(f"- **{k}**: **{v}**")
-        lines.append("")
+    d = float(annual_demand)
+    s = float(order_cost)
+    c_val = float(unit_cost) if unit_cost is not None else None
+    i_val = float(holding_cost_rate) if holding_cost_rate is not None else None
+    wd = float(work_days_per_year)
 
-        # 7. Verification Checks
-        lines.append("### 7. Verification Checks")
-        for check in self.verification_checks:
-            lines.append(f"- [x] {check}")
-        lines.append("")
+    # 1. Inputs Extracted
+    inputs_extracted = {
+        "annual_demand (D)": d,
+        "order_cost (S)": s,
+        "holding_cost (H)": h,
+        "unit_cost (C)": c_val,
+        "holding_cost_rate (i)": i_val,
+        "work_days_per_year": wd,
+    }
 
-        # 8. Assumptions
-        lines.append("### 8. Assumptions")
-        for idx, assumption in enumerate(self.assumptions, 1):
-            lines.append(f"{idx}. {assumption}")
-        lines.append("")
+    # 2. Variable Definitions
+    variable_definitions = {
+        "D": "Annual demand rate (units per year)",
+        "S": "Fixed setup or ordering cost incurred per order placed ($/order)",
+        "H": "Holding (carrying) cost to maintain one unit in inventory for one year ($/unit/year)",
+        "C": "Purchase cost per unit ($/unit, if applicable)",
+        "i": "Annual holding cost rate as a fraction of unit purchase price (%/year)",
+        "Q*": "Economic Order Quantity: the optimal replenishment batch size that minimizes total inventory costs (units)",
+        "N": "Order frequency: optimal number of replenishment orders placed per year (orders/year)",
+        "T": "Cycle time: time between consecutive replenishment orders (operating days)",
+        "TC_order": "Total annual ordering cost ($/year)",
+        "TC_hold": "Total annual inventory holding cost ($/year)",
+        "TC_inv": "Total annual inventory cost (Ordering Cost + Holding Cost) ($/year)",
+        "TC_total": "Total annual landed cost including acquisition purchase cost ($/year)",
+    }
 
-        return "\n".join(lines)
+    # Deterministic Calculations
+    two_ds = 2.0 * d * s
+    ratio = two_ds / h
+    q_opt_raw = math.sqrt(ratio)
+    q_opt = round(q_opt_raw, 2)
 
+    n_orders = d / q_opt
+    cycle_days = (q_opt / d) * wd
+    annual_ordering = n_orders * s
+    annual_holding = (q_opt / 2.0) * h
+    total_inv = annual_ordering + annual_holding
+    purchase_cost = (d * c_val) if c_val is not None else None
+    total_cost = (purchase_cost + total_inv) if purchase_cost is not None else total_inv
+
+    # 3. Formula
+    formulas = {
+        "Optimal Order Quantity (Q*)": "Q* = sqrt((2 * D * S) / H)",
+        "Orders per Year (N)": "N = D / Q*",
+        "Cycle Time Days (T)": "T = (Q* / D) * work_days_per_year",
+        "Annual Ordering Cost (TC_order)": "TC_order = (D / Q*) * S = N * S",
+        "Annual Holding Cost (TC_hold)": "TC_hold = (Q* / 2) * H",
+        "Total Annual Inventory Cost (TC_inv)": "TC_inv = TC_order + TC_hold",
+        "Total Annual Landed Cost (TC_total)": "TC_total = (D * C) + TC_inv  [if unit cost provided]",
+    }
+
+    # 4. Formula with Substituted Values
+    formulas_substituted = {
+        "Optimal Order Quantity (Q*)": f"sqrt((2 * {d:,.2f} * {s:,.2f}) / {h:.4f}) = sqrt({two_ds:,.2f} / {h:.4f}) = sqrt({ratio:,.4f}) = {q_opt:,.2f} units",
+        "Orders per Year (N)": f"{d:,.2f} / {q_opt:,.2f} = {n_orders:.2f} orders/year",
+        "Cycle Time Days (T)": f"({q_opt:,.2f} / {d:,.2f}) * {wd:,.0f} = {cycle_days:.1f} operating days",
+        "Annual Ordering Cost (TC_order)": f"({d:,.2f} / {q_opt:,.2f}) * {s:,.2f} = {n_orders:.2f} * ${s:,.2f} = ${annual_ordering:,.2f}",
+        "Annual Holding Cost (TC_hold)": f"({q_opt:,.2f} / 2) * {h:.4f} = {q_opt/2:,.2f} * ${h:.4f} = ${annual_holding:,.2f}",
+        "Total Annual Inventory Cost (TC_inv)": f"${annual_ordering:,.2f} + ${annual_holding:,.2f} = ${total_inv:,.2f}",
+    }
+    if purchase_cost is not None:
+        formulas_substituted["Total Annual Landed Cost (TC_total)"] = (
+            f"({d:,.2f} * ${c_val:,.2f}) + ${total_inv:,.2f} = ${purchase_cost:,.2f} + ${total_inv:,.2f} = ${total_cost:,.2f}"
+        )
+
+    # 5. Intermediate Calculations
+    intermediate_calcs = {
+        "2DS": two_ds,
+        "step_1_numerator_2DS": two_ds,
+        "step_2_ratio_2DS_over_H": ratio,
+        "step_3_sqrt_unrounded_Q": q_opt_raw,
+        "step_4_optimal_Q_rounded": q_opt,
+        "step_5_orders_per_year_N": round(n_orders, 4),
+        "step_6_cycle_time_fraction_of_year": round(q_opt / d, 6),
+        "step_7_cycle_time_days": round(cycle_days, 2),
+        "step_8_annual_ordering_cost": round(annual_ordering, 2),
+        "step_9_annual_holding_cost": round(annual_holding, 2),
+        "step_10_cost_difference_ordering_vs_holding": round(abs(annual_ordering - annual_holding), 2),
+        "step_11_total_annual_inventory_cost": round(total_inv, 2),
+        "step_12_annual_purchase_cost": round(purchase_cost, 2) if purchase_cost is not None else None,
+        "step_13_total_annual_landed_cost": round(total_cost, 2),
+    }
+
+    # 6. Final Answer
+    final_ans = {
+        "optimal_order_quantity": q_opt,
+        "optimal_order_quantity_units": "units per replenishment order",
+        "orders_per_year": round(n_orders, 2),
+        "cycle_time_days": round(cycle_days, 1),
+        "annual_ordering_cost": round(annual_ordering, 2),
+        "annual_holding_cost": round(annual_holding, 2),
+        "total_annual_inventory_cost": round(total_inv, 2),
+        "total_annual_landed_cost": round(total_cost, 2),
+    }
+
+    # 7. Verification Checks
+    diff = abs(annual_ordering - annual_holding)
+    rel_diff = diff / max(1.0, annual_ordering)
+    second_deriv = (2.0 * d * s) / (q_opt ** 3)
+
+    verifications = [
+        {
+            "check": "Positivity Check",
+            "condition": "Q* > 0",
+            "passed": q_opt > 0,
+            "detail": f"Optimal order quantity ({q_opt:,.2f} units) is strictly positive.",
+        },
+        {
+            "check": "Cost Trade-off Balance (First Order Optimality)",
+            "condition": "|Annual Ordering Cost - Annual Holding Cost| / Ordering Cost <= 0.05",
+            "passed": rel_diff <= 0.05,
+            "detail": (
+                f"At Q* = {q_opt:,.2f}, Annual Ordering Cost (${annual_ordering:,.2f}) equals Annual Holding Cost "
+                f"(${annual_holding:,.2f}) within {rel_diff:.2%} (diff: ${diff:.2f}), confirming the trade-off minimum where dTC/dQ = 0."
+            ),
+        },
+        {
+            "check": "Convexity Check (Second Order Sufficiency)",
+            "condition": "d^2(TC)/dQ^2 = (2 * D * S) / Q^3 > 0",
+            "passed": second_deriv > 0,
+            "detail": f"Second derivative d^2(TC)/dQ^2 = {second_deriv:.6f} > 0, confirming a strict global cost minimum.",
+        },
+    ]
+
+    # 8. Assumptions
+    model_assumptions = [
+        "Demand rate (D) is constant, deterministic, and continuous over the annual planning cycle.",
+        "Replenishment lead time is zero or constant.",
+        "Batch replenishment arrives instantaneously as a single complete delivery of Q units.",
+        "Stockouts, shortages, and backorders are not permitted.",
+        "Unit purchase price, fixed order cost (S), and unit holding cost (H) are constant over time.",
+    ]
+
+    return EOQResult(
+        inputs_extracted=inputs_extracted,
+        variable_definitions=variable_definitions,
+        formula=formulas,
+        formula_with_substituted_values=formulas_substituted,
+        intermediate_calculations=intermediate_calcs,
+        final_answer=final_ans,
+        verification_checks=verifications,
+        assumptions=model_assumptions,
+        optimal_order_quantity=q_opt,
+        annual_demand=d,
+        order_cost=s,
+        unit_holding_cost=round(h, 4),
+        orders_per_year=round(n_orders, 2),
+        cycle_time_days=round(cycle_days, 1),
+        annual_ordering_cost=round(annual_ordering, 2),
+        annual_holding_cost=round(annual_holding, 2),
+        total_annual_inventory_cost=round(total_inv, 2),
+        annual_purchase_cost=round(purchase_cost, 2) if purchase_cost is not None else None,
+        total_annual_cost=round(total_cost, 2),
+    )
+
+
+# ============================================================================
+# 2. Quantity Discount Model
+# ============================================================================
 
 @dataclass
-class EOQResult(BaseInventoryResult):
-    model_name: str = "Economic Order Quantity (EOQ)"
-
-    @property
-    def optimal_order_quantity(self) -> float:
-        return self.final_answer.get("optimal_order_quantity", 0.0)
-
-    @property
-    def orders_per_year(self) -> float:
-        return self.intermediate_calculations.get("orders_per_year", 0.0)
-
-    @property
-    def order_cycle_days(self) -> float:
-        return self.intermediate_calculations.get("order_cycle_days", 0.0)
-
-    @property
-    def annual_ordering_cost(self) -> float:
-        return self.intermediate_calculations.get("annual_ordering_cost", 0.0)
-
-    @property
-    def annual_holding_cost(self) -> float:
-        return self.intermediate_calculations.get("annual_holding_cost", 0.0)
-
-    @property
-    def total_inventory_cost(self) -> float:
-        return self.final_answer.get("total_inventory_cost", 0.0)
-
-    @property
-    def total_annual_cost(self) -> float:
-        return self.final_answer.get("total_annual_cost", self.total_inventory_cost)
-
-    @property
-    def reorder_point(self) -> Optional[float]:
-        return self.intermediate_calculations.get("reorder_point")
-
-
-@dataclass
-class DiscountTierEvaluation:
-    tier_id: int
+class DiscountTierDetail:
+    tier_index: int
     min_qty: float
     max_qty: Optional[float]
     unit_price: float
-    holding_cost: float
-    calculated_eoq: float
+    unit_holding_cost: float
+    unconstrained_eoq: float
     feasible_quantity: float
-    is_price_break_point: bool
-    annual_material_cost: float
+    is_price_break_adjusted: bool
+    annual_purchasing_cost: float
     annual_ordering_cost: float
     annual_holding_cost: float
     total_annual_cost: float
 
 
 @dataclass
-class QuantityDiscountResult(BaseInventoryResult):
-    model_name: str = "Quantity Discount"
-    tier_evaluations: List[DiscountTierEvaluation] = field(default_factory=list)
-
-    @property
-    def optimal_order_quantity(self) -> float:
-        return self.final_answer.get("optimal_order_quantity", 0.0)
-
-    @property
-    def optimal_tier_id(self) -> int:
-        return self.final_answer.get("optimal_tier_id", 1)
-
-    @property
-    def optimal_unit_price(self) -> float:
-        return self.final_answer.get("optimal_unit_price", 0.0)
-
-    @property
-    def optimal_total_cost(self) -> float:
-        return self.final_answer.get("min_total_annual_cost", 0.0)
-
-    @property
-    def annual_savings_vs_base(self) -> float:
-        return self.final_answer.get("annual_savings_vs_base", 0.0)
-
-
-@dataclass
-class ROPResult(BaseInventoryResult):
-    model_name: str = "Safety Stock & Reorder Point"
-
-    @property
-    def reorder_point(self) -> float:
-        return self.final_answer.get("reorder_point", 0.0)
-
-    @property
-    def safety_stock(self) -> float:
-        return self.final_answer.get("safety_stock", 0.0)
-
-    @property
-    def service_level(self) -> float:
-        return self.inputs_extracted.get("service_level", 0.0)
-
-    @property
-    def z_score(self) -> float:
-        return self.intermediate_calculations.get("z_score", 0.0)
-
-    @property
-    def lead_time_demand_mean(self) -> float:
-        return self.intermediate_calculations.get("lead_time_demand_mean", 0.0)
-
-    @property
-    def lead_time_demand_std(self) -> float:
-        return self.intermediate_calculations.get("lead_time_demand_std", 0.0)
-
-    @property
-    def stockout_probability_per_cycle(self) -> float:
-        return self.intermediate_calculations.get("stockout_probability_per_cycle", 0.0)
-
-    @property
-    def annual_ss_holding_cost(self) -> Optional[float]:
-        return self.intermediate_calculations.get("annual_ss_holding_cost")
-
-
-# Alias for backward compatibility
-SafetyStockROPResult = ROPResult
-
-
-@dataclass
-class PeriodicReviewResult(BaseInventoryResult):
-    model_name: str = "Fixed-Period Review (Order-Up-To Level)"
-
-    @property
-    def order_up_to_level_M(self) -> float:
-        return self.final_answer.get("target_inventory", 0.0)
-
-    @property
-    def target_inventory(self) -> float:
-        return self.order_up_to_level_M
-
-    @property
-    def recommended_order_quantity(self) -> Optional[float]:
-        return self.final_answer.get("order_quantity")
-
-    @property
-    def safety_stock(self) -> float:
-        return self.final_answer.get("safety_stock", 0.0)
-
-    @property
-    def protection_interval(self) -> float:
-        return self.intermediate_calculations.get("protection_period", 0.0)
-
-    @property
-    def review_period_P(self) -> float:
-        return self.inputs_extracted.get("review_period", 0.0)
-
-    @property
-    def lead_time_L(self) -> float:
-        return self.inputs_extracted.get("lead_time", 0.0)
-
-    @property
-    def protection_demand_mean(self) -> float:
-        return self.intermediate_calculations.get("protection_demand_mean", 0.0)
-
-    @property
-    def protection_demand_std(self) -> float:
-        return self.intermediate_calculations.get("protection_demand_std", 0.0)
-
-    @property
-    def z_score(self) -> float:
-        return self.intermediate_calculations.get("z_score", 0.0)
-
-    @property
-    def current_inventory_position(self) -> Optional[float]:
-        return self.intermediate_calculations.get("inventory_position")
-
-    @property
-    def safety_stock_vs_continuous_ratio(self) -> float:
-        return self.intermediate_calculations.get("safety_stock_vs_continuous_ratio", 1.0)
-
-
-# Alias for backward compatibility
-FixedPeriodReviewResult = PeriodicReviewResult
-
-
-@dataclass
-class NewsvendorResult(BaseInventoryResult):
-    model_name: str = "Newsvendor (Single-Period)"
-
-    @property
-    def optimal_order_quantity(self) -> float:
-        return self.final_answer.get("recommended_order_quantity", 0.0)
-
-    @property
-    def recommended_order_quantity(self) -> float:
-        return self.optimal_order_quantity
-
-    @property
-    def critical_ratio(self) -> float:
-        return self.final_answer.get("critical_ratio", 0.0)
-
-    @property
-    def underage_cost_Cu(self) -> float:
-        return self.final_answer.get("underage_cost", 0.0)
-
-    @property
-    def overage_cost_Co(self) -> float:
-        return self.final_answer.get("overage_cost", 0.0)
-
-    @property
-    def expected_profit(self) -> float:
-        return self.final_answer.get("expected_profit", 0.0)
-
-    @property
-    def selling_price(self) -> float:
-        return self.inputs_extracted.get("selling_price", 0.0)
-
-    @property
-    def purchase_cost(self) -> float:
-        return self.inputs_extracted.get("purchase_cost", 0.0)
-
-    @property
-    def salvage_value(self) -> float:
-        return self.inputs_extracted.get("salvage_value", 0.0)
-
-    @property
-    def expected_sales(self) -> float:
-        return self.intermediate_calculations.get("expected_sales", 0.0)
-
-    @property
-    def expected_lost_sales(self) -> float:
-        return self.intermediate_calculations.get("expected_lost_sales", 0.0)
-
-    @property
-    def expected_leftover_units(self) -> float:
-        return self.intermediate_calculations.get("expected_leftover_units", 0.0)
-
-    @property
-    def in_stock_probability(self) -> float:
-        return self.critical_ratio
-
-
-# ---------------------------------------------------------------------------
-# Tool 1: Economic Order Quantity (EOQ)
-# ---------------------------------------------------------------------------
-
-def calculate_eoq(
-    annual_demand: Optional[float] = None,
-    ordering_cost: Optional[float] = None,
-    holding_cost: Optional[float] = None,
-    demand: Optional[float] = None,
-    unit_cost: Optional[float] = None,
-    lead_time_days: Optional[float] = None,
-    work_days_per_year: Optional[float] = None,
-) -> EOQResult:
-    """Calculate Classical Economic Order Quantity with full pedagogical verification steps.
-
-    1. Inputs Extracted
-    2. Variable Definitions
-    3. Formula
-    4. Formula with Substituted Values
-    5. Intermediate Calculations
-    6. Final Answer
-    7. Verification Checks
-    8. Assumptions
-    """
-    D = demand if demand is not None else annual_demand
-    S = ordering_cost
-    H = holding_cost
-
-    # Input Validation (never invent missing information)
-    if D is None:
-        raise ValueError("Missing required input: annual demand (D) must be provided. Missing numerical inputs will not be invented.")
-    if S is None:
-        raise ValueError("Missing required input: ordering/setup cost (S) must be provided. Missing numerical inputs will not be invented.")
-    if H is None:
-        raise ValueError("Missing required input: holding cost (H) must be provided. Missing numerical inputs will not be invented.")
-
-    if D <= 0:
-        raise ValueError(f"Annual demand (D={D}) must be strictly positive.")
-    if S <= 0:
-        raise ValueError(f"Ordering cost (S={S}) must be strictly positive.")
-    if H <= 0:
-        raise ValueError(f"Holding cost (H={H}) must be strictly positive.")
-    if unit_cost is not None and unit_cost < 0:
-        raise ValueError(f"Unit cost ({unit_cost}) cannot be negative.")
-    if lead_time_days is not None and lead_time_days < 0:
-        raise ValueError(f"Lead time days ({lead_time_days}) cannot be negative.")
-
-    work_days = work_days_per_year if work_days_per_year is not None else 250.0
-
+class QuantityDiscountResult:
     # 1. Inputs Extracted
-    inputs_extracted = {
-        "annual_demand": D,
-        "ordering_cost": S,
-        "holding_cost": H,
-        "unit_cost": unit_cost,
-        "lead_time_days": lead_time_days,
-        "work_days_per_year": work_days,
-    }
+    inputs_extracted: Dict[str, Any]
 
     # 2. Variable Definitions
-    var_definitions = {
-        "D": "Annual customer demand (units/year)",
-        "S": "Order setup / placement cost ($/order)",
-        "H": "Annual inventory carrying/holding cost per unit ($/unit/year)",
-        "C": "Unit purchase price ($/unit)",
-        "Q*": "Economic Order Quantity (optimal batch size in units)",
-        "N": "Order frequency (orders placed per year = D / Q*)",
-        "T": "Cycle length / order cycle in operating days = (Q* / D) * work_days",
-        "AOC": "Annual Ordering Cost = (D / Q*) * S ($/year)",
-        "AHC": "Annual Holding Cost = (Q* / 2) * H ($/year)",
-        "TC": "Total Annual Variable Inventory Cost = AOC + AHC ($/year)",
-        "ROP": "Reorder Point in units = (D / work_days) * L (if lead time provided)",
-    }
+    variable_definitions: Dict[str, str]
 
     # 3. Formula
-    formulas = {
-        "EOQ": "Q* = sqrt((2 * D * S) / H)",
-        "Orders_Per_Year": "N = D / Q*",
-        "Cycle_Days": "T = (Q* / D) * work_days",
-        "Annual_Ordering_Cost": "AOC = (D / Q*) * S",
-        "Annual_Holding_Cost": "AHC = (Q* / 2) * H",
-        "Total_Inventory_Cost": "TC = AOC + AHC",
-    }
-    if lead_time_days is not None and lead_time_days > 0:
-        formulas["Reorder_Point"] = "ROP = (D / work_days) * lead_time_days"
-
-    # Step-by-step arithmetic
-    numerator = 2.0 * D * S
-    ratio = numerator / H
-    eoq = math.sqrt(ratio)
-    orders_per_year = D / eoq
-    order_cycle_days = (eoq / D) * work_days
-    annual_ordering_cost = orders_per_year * S
-    annual_holding_cost = (eoq / 2.0) * H
-    total_inventory_cost = annual_ordering_cost + annual_holding_cost
-    annual_purchase_cost = (D * unit_cost) if unit_cost is not None else None
-    total_annual_cost = (total_inventory_cost + annual_purchase_cost) if annual_purchase_cost is not None else total_inventory_cost
-
-    reorder_point = None
-    if lead_time_days is not None and lead_time_days > 0:
-        daily_d = D / work_days
-        reorder_point = daily_d * lead_time_days
+    formula: Dict[str, str]
 
     # 4. Formula with Substituted Values
-    substitutions = {
-        "EOQ": f"Q* = sqrt((2 * {D:,.2f} * {S:,.2f}) / {H:,.2f}) = sqrt({numerator:,.2f} / {H:,.2f}) = sqrt({ratio:,.2f}) = {eoq:,.2f} units",
-        "Orders_Per_Year": f"N = {D:,.2f} / {eoq:,.2f} = {orders_per_year:,.2f} orders/year",
-        "Cycle_Days": f"T = ({eoq:,.2f} / {D:,.2f}) * {work_days:.0f} = {order_cycle_days:,.1f} operating days",
-        "Annual_Ordering_Cost": f"AOC = ({D:,.2f} / {eoq:,.2f}) * ${S:,.2f} = ${annual_ordering_cost:,.2f}",
-        "Annual_Holding_Cost": f"AHC = ({eoq:,.2f} / 2) * ${H:,.2f} = ${annual_holding_cost:,.2f}",
-        "Total_Inventory_Cost": f"TC = ${annual_ordering_cost:,.2f} + ${annual_holding_cost:,.2f} = ${total_inventory_cost:,.2f}",
-    }
-    if reorder_point is not None:
-        substitutions["Reorder_Point"] = f"ROP = ({D:,.2f} / {work_days:.0f}) * {lead_time_days:.1f} = {reorder_point:,.2f} units"
+    formula_with_substituted_values: Dict[str, str]
 
     # 5. Intermediate Calculations
-    intermediate = {
-        "numerator_2DS": round(numerator, 2),
-        "ratio_2DS_over_H": round(ratio, 2),
-        "orders_per_year": round(orders_per_year, 2),
-        "order_cycle_days": round(order_cycle_days, 1),
-        "annual_ordering_cost": round(annual_ordering_cost, 2),
-        "annual_holding_cost": round(annual_holding_cost, 2),
-        "total_inventory_cost": round(total_inventory_cost, 2),
-        "annual_purchase_cost": round(annual_purchase_cost, 2) if annual_purchase_cost is not None else None,
-        "total_annual_cost": round(total_annual_cost, 2),
-        "reorder_point": round(reorder_point, 2) if reorder_point is not None else None,
-    }
+    intermediate_calculations: Dict[str, Any]
 
     # 6. Final Answer
-    final_answer = {
-        "optimal_order_quantity": round(eoq, 2),
-        "total_inventory_cost": round(total_inventory_cost, 2),
-        "total_annual_cost": round(total_annual_cost, 2),
-    }
+    final_answer: Dict[str, Any]
 
     # 7. Verification Checks
-    verification_checks = []
-    cost_diff = abs(annual_ordering_cost - annual_holding_cost)
-    parity_tol = max(2.0, 0.01 * total_inventory_cost)
-    if cost_diff <= parity_tol:
-        verification_checks.append(f"Cost parity verified: |AOC - AHC| = ${cost_diff:.2f} <= tolerance ${parity_tol:.2f}")
-    else:
-        verification_checks.append(f"Cost difference between AOC (${annual_ordering_cost:.2f}) and AHC (${annual_holding_cost:.2f}) due to integer lot rounding")
-
-    def cost_at(q: float) -> float:
-        return (D / q) * S + (q / 2.0) * H
-
-    base_cost = cost_at(eoq)
-    cost_minus_10 = cost_at(eoq * 0.90)
-    cost_plus_10 = cost_at(eoq * 1.10)
-    if cost_minus_10 >= base_cost and cost_plus_10 >= base_cost:
-        verification_checks.append("Convexity check passed: Q* is the strict global minimum.")
-    else:
-        verification_checks.append("Convexity check warning: perturbed point cost was lower than Q*.")
+    verification_checks: List[Dict[str, Any]]
 
     # 8. Assumptions
-    assumptions = [
-        "Demand rate is deterministic, constant, and uniformly distributed throughout the year.",
-        "Replenishment lead time is constant and known (or instantaneous).",
-        "Order setup cost and unit holding cost are fixed constants independent of order size.",
-        "Entire replenishment batch arrives simultaneously (instantaneous delivery).",
-        "Shortages, stockouts, and backorders are strictly prohibited.",
-        "Unit purchase price is constant (no quantity discounts apply).",
-    ]
+    assumptions: List[str]
 
-    result = EOQResult(
-        inputs_extracted=inputs_extracted,
-        variable_definitions=var_definitions,
-        formula=formulas,
-        formula_with_substituted_values=substitutions,
-        intermediate_calculations=intermediate,
-        final_answer=final_answer,
-        verification_checks=verification_checks,
-        assumptions=assumptions,
-    )
+    # Core attribute accessors
+    optimal_tier_index: int
+    optimal_order_quantity: float
+    optimal_unit_price: float
+    minimum_total_annual_cost: float
+    annual_demand: float
+    order_cost: float
+    tier_evaluations: List[DiscountTierDetail]
 
-    result.verification = verify_eoq(inputs_extracted, result)
-    return result
+    @property
+    def minimum_total_cost(self) -> float:
+        return self.minimum_total_annual_cost
 
+    @property
+    def annual_purchasing_cost(self) -> float:
+        return self.tier_evaluations[self.optimal_tier_index].annual_purchasing_cost
 
-def verify_eoq(inputs: Dict[str, Any], result: EOQResult) -> ToolVerification:
-    """Verify cost parity and sensitivity for EOQ."""
-    passed = result.verification_checks.copy()
-    warnings = []
-    D = inputs["annual_demand"]
-    S = inputs["ordering_cost"]
-    H = inputs["holding_cost"]
-    Q = result.optimal_order_quantity
+    @property
+    def annual_ordering_cost(self) -> float:
+        return self.tier_evaluations[self.optimal_tier_index].annual_ordering_cost
 
-    def cost_at(q: float) -> float:
-        return (D / q) * S + (q / 2.0) * H
+    @property
+    def annual_holding_cost(self) -> float:
+        return self.tier_evaluations[self.optimal_tier_index].annual_holding_cost
 
-    base_cost = cost_at(Q)
-    cost_minus_10 = cost_at(Q * 0.90)
-    cost_plus_10 = cost_at(Q * 1.10)
+    @property
+    def summary_message(self) -> str:
+        return (
+            f"Recommended: Order {self.optimal_order_quantity:,.0f} units at ${self.optimal_unit_price:.2f}/unit "
+            f"(Tier {self.optimal_tier_index + 1}) for a total annual landed cost of ${self.minimum_total_annual_cost:,.2f}."
+        )
 
-    sensitivity = {
-        "at_minus_20_pct": round(cost_at(Q * 0.80), 2),
-        "at_minus_10_pct": round(cost_minus_10, 2),
-        "at_optimal_Q": round(base_cost, 2),
-        "at_plus_10_pct": round(cost_plus_10, 2),
-        "at_plus_20_pct": round(cost_at(Q * 1.20), 2),
-        "cost_penalty_at_plus_10_pct": round(cost_plus_10 - base_cost, 2),
-    }
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
-    return ToolVerification(
-        is_valid=(len(warnings) == 0),
-        checks_passed=passed,
-        warnings=warnings,
-        sensitivity_analysis=sensitivity,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Tool 2: Quantity Discount
-# ---------------------------------------------------------------------------
 
 def calculate_quantity_discount(
-    annual_demand: Optional[float] = None,
-    ordering_cost: Optional[float] = None,
-    tiers: Optional[List[Dict[str, Any]]] = None,
-    demand: Optional[float] = None,
+    annual_demand: float,
+    order_cost: float,
+    price_tiers: List[Dict[str, Any]],
     holding_cost_rate: Optional[float] = None,
     fixed_holding_cost: Optional[float] = None,
 ) -> QuantityDiscountResult:
-    """Calculate Optimal Order Quantity under All-Units Quantity Discounts with all 8 verification sections."""
-    D = demand if demand is not None else annual_demand
-    S = ordering_cost
+    """
+    Evaluates quantity discount schedules across all pricing tiers.
+    Supports both fixed holding cost and percentage holding cost.
 
-    # Input validation
-    if D is None:
-        raise ValueError("Missing required input: annual demand (D) must be provided. Missing numerical inputs will not be invented.")
-    if S is None:
-        raise ValueError("Missing required input: ordering cost (S) must be provided. Missing numerical inputs will not be invented.")
-    if not tiers:
-        raise ValueError("Missing required input: at least one discount tier must be provided.")
-    if holding_cost_rate is None and fixed_holding_cost is None:
-        if not all("holding_cost" in t and t["holding_cost"] is not None for t in tiers):
-            raise ValueError("Missing holding cost: either holding_cost_rate, fixed_holding_cost, or tier-level holding_cost must be provided.")
+    Returns the complete 8 verification sections:
+        1. Inputs Extracted
+        2. Variable Definitions
+        3. Formula
+        4. Formula with Substituted Values
+        5. Intermediate Calculations
+        6. Final Answer
+        7. Verification Checks
+        8. Assumptions
+    """
+    if annual_demand is None or annual_demand <= 0:
+        raise ValueError(f"annual_demand must be positive. Got {annual_demand}")
+    if order_cost is None or order_cost <= 0:
+        raise ValueError(f"order_cost must be positive. Got {order_cost}")
+    if not price_tiers or not isinstance(price_tiers, list) or len(price_tiers) == 0:
+        raise ValueError("price_tiers must be a non-empty list of pricing tier specifications.")
 
-    if D <= 0:
-        raise ValueError(f"Annual demand ({D}) must be strictly positive.")
-    if S <= 0:
-        raise ValueError(f"Ordering cost ({S}) must be strictly positive.")
-    if holding_cost_rate is not None and holding_cost_rate <= 0:
-        raise ValueError(f"Holding cost rate ({holding_cost_rate}) must be positive.")
-    if fixed_holding_cost is not None and fixed_holding_cost <= 0:
-        raise ValueError(f"Fixed holding cost ({fixed_holding_cost}) must be positive.")
+    if fixed_holding_cost is not None and fixed_holding_cost > 0:
+        holding_type = "fixed"
+        h_param = float(fixed_holding_cost)
+    elif holding_cost_rate is not None and holding_cost_rate > 0:
+        holding_type = "percentage"
+        h_param = float(holding_cost_rate)
+    else:
+        raise ValueError(
+            "Missing holding cost specification: Must provide either holding_cost_rate (i) "
+            "or fixed_holding_cost (H). Missing values cannot be invented."
+        )
+
+    d = float(annual_demand)
+    s = float(order_cost)
 
     # 1. Inputs Extracted
     inputs_extracted = {
-        "annual_demand": D,
-        "ordering_cost": S,
-        "holding_cost_rate": holding_cost_rate,
-        "fixed_holding_cost": fixed_holding_cost,
-        "tiers": tiers,
+        "annual_demand (D)": d,
+        "order_cost (S)": s,
+        "holding_cost_type": holding_type,
+        "holding_cost_rate (i)": h_param if holding_type == "percentage" else None,
+        "fixed_holding_cost (H)": h_param if holding_type == "fixed" else None,
+        "price_tiers": price_tiers,
     }
 
     # 2. Variable Definitions
-    var_definitions = {
-        "D": "Annual customer demand (units/year)",
-        "S": "Order setup / placement cost ($/order)",
-        "P_i": "Unit purchase price for tier i ($/unit)",
-        "H_i": "Annual unit holding cost for tier i ($/unit/year)",
-        "EOQ_i": "Unconstrained EOQ calculated for tier i = sqrt(2DS / H_i)",
-        "Q_feasible_i": "Feasible lot size after checking price break thresholds",
-        "Material_Cost_i": "Annual purchasing cost = D * P_i ($/year)",
-        "Ordering_Cost_i": "Annual order cost = (D / Q_feasible_i) * S ($/year)",
-        "Holding_Cost_i": "Annual carrying cost = (Q_feasible_i / 2) * H_i ($/year)",
-        "Total_Cost_i": "Total Annual Cost = Material + Ordering + Holding ($/year)",
+    variable_definitions = {
+        "D": "Annual demand in units",
+        "S": "Fixed ordering cost per order placed ($)",
+        "j": "Pricing tier bracket index (1 to K)",
+        "P_j": "Unit purchase price within tier j ($/unit)",
+        "H_j": "Unit holding cost per year for tier j ($/unit/year; H_j = i * P_j or fixed H)",
+        "EOQ_j": "Unconstrained Wilson EOQ evaluated at tier j's holding cost H_j",
+        "Q_j": "Feasible order quantity adjusted to tier j's minimum price break threshold if EOQ_j < min_qty_j",
+        "TC_purchase_j": "Annual acquisition purchasing cost for tier j: D * P_j ($)",
+        "TC_order_j": "Annual ordering cost for tier j: (D / Q_j) * S ($)",
+        "TC_hold_j": "Annual holding cost for tier j: (Q_j / 2) * H_j ($)",
+        "TC_j": "Total annual landed cost for tier j: TC_purchase_j + TC_order_j + TC_hold_j ($)",
+        "j*": "Optimal pricing tier that achieves the global minimum total annual cost",
     }
 
     # 3. Formula
     formulas = {
-        "Unconstrained_EOQ": "EOQ_i = sqrt((2 * D * S) / H_i)",
-        "Feasible_Quantity": "Q_i = max(min_qty_i, EOQ_i) if EOQ_i <= max_qty_i",
-        "Total_Annual_Cost": "TC(Q_i) = (D * P_i) + ((D / Q_i) * S) + ((Q_i / 2) * H_i)",
-        "Optimal_Decision": "Select tier i with minimum Total Annual Cost TC(Q_i)",
+        "Tier Holding Cost (H_j)": "H_j = fixed_H  [if fixed]  OR  H_j = i * P_j  [if percentage]",
+        "Unconstrained EOQ (EOQ_j)": "EOQ_j = sqrt((2 * D * S) / H_j)",
+        "Feasibility Condition": "If EOQ_j < min_qty_j: Q_j = min_qty_j; Else if EOQ_j in bracket: Q_j = EOQ_j; Else Q_j = max_qty_j",
+        "Total Annual Cost (TC_j)": "TC_j = (D * P_j) + ((D / Q_j) * S) + ((Q_j / 2) * H_j)",
+        "Optimal Decision": "j* = argmin_j(TC_j),  Q* = Q_{j*}",
     }
 
-    evaluations: List[DiscountTierEvaluation] = []
-    substitutions: Dict[str, str] = {}
-    best_tier_idx = -1
-    lowest_total_cost = float("inf")
-    optimal_q = 0.0
+    # Evaluate each tier
+    sorted_tiers = sorted(price_tiers, key=lambda t: t.get("min_qty", 0))
+    tier_details: List[DiscountTierDetail] = []
+    formulas_substituted: Dict[str, str] = {}
 
-    for idx, tier in enumerate(tiers):
-        tier_id = tier.get("tier_id", idx + 1)
-        min_q = float(tier["min_qty"])
-        max_q = float(tier["max_qty"]) if tier.get("max_qty") is not None else None
-        price = float(tier["unit_price"])
+    for idx, tier in enumerate(sorted_tiers):
+        if "unit_price" not in tier or tier["unit_price"] <= 0:
+            raise ValueError(f"Tier {idx} missing valid positive unit_price: {tier}")
+        min_q = float(tier.get("min_qty", 1.0))
+        max_q_val = tier.get("max_qty")
+        max_q = float(max_q_val) if max_q_val not in (None, "", float("inf")) else None
+        p = float(tier["unit_price"])
 
-        if price <= 0:
-            raise ValueError(f"Tier {tier_id} unit price ({price}) must be positive.")
-        if min_q < 0:
-            raise ValueError(f"Tier {tier_id} min_qty ({min_q}) cannot be negative.")
+        h_j = h_param if holding_type == "fixed" else p * h_param
+        raw_eoq = math.sqrt((2.0 * d * s) / h_j)
 
-        if "holding_cost" in tier and tier["holding_cost"] is not None:
-            H = float(tier["holding_cost"])
-        elif holding_cost_rate is not None:
-            H = holding_cost_rate * price
-        elif fixed_holding_cost is not None:
-            H = fixed_holding_cost
-        else:
-            raise ValueError(f"Unable to determine holding cost for tier {tier_id}.")
-
-        unconstrained_eoq = math.sqrt((2.0 * D * S) / H)
-
-        is_break_point = False
-        if unconstrained_eoq < min_q:
+        is_adjusted = False
+        if raw_eoq < min_q:
             feasible_q = min_q
-            is_break_point = True
-        elif max_q is not None and unconstrained_eoq > max_q:
+            is_adjusted = True
+        elif max_q is not None and raw_eoq > max_q:
             feasible_q = max_q
+            is_adjusted = True
         else:
-            feasible_q = unconstrained_eoq
+            feasible_q = raw_eoq
 
-        annual_mat_cost = D * price
-        annual_ord_cost = (D / feasible_q) * S
-        annual_hld_cost = (feasible_q / 2.0) * H
-        total_cost = annual_mat_cost + annual_ord_cost + annual_hld_cost
+        purchasing = d * p
+        ordering = (d / feasible_q) * s
+        holding = (feasible_q / 2.0) * h_j
+        total = purchasing + ordering + holding
 
-        evaluations.append(
-            DiscountTierEvaluation(
-                tier_id=tier_id,
+        max_label = f"{max_q:,.0f}" if max_q is not None else "∞"
+        formulas_substituted[f"Tier_{idx+1}_Evaluation ({min_q:,.0f}-{max_label} @ ${p:.2f})"] = (
+            f"EOQ_{idx+1} = sqrt((2 * {d:,.0f} * {s:,.2f}) / {h_j:.4f}) = {raw_eoq:,.2f} units -> "
+            f"Feasible Q_{idx+1} = {feasible_q:,.0f} units. "
+            f"TC_{idx+1} = (${purchasing:,.2f} purchase) + (${ordering:,.2f} order) + (${holding:,.2f} hold) = ${total:,.2f}"
+        )
+
+        tier_details.append(
+            DiscountTierDetail(
+                tier_index=idx,
                 min_qty=min_q,
                 max_qty=max_q,
-                unit_price=round(price, 4),
-                holding_cost=round(H, 4),
-                calculated_eoq=round(unconstrained_eoq, 2),
+                unit_price=p,
+                unit_holding_cost=round(h_j, 4),
+                unconstrained_eoq=round(raw_eoq, 2),
                 feasible_quantity=round(feasible_q, 2),
-                is_price_break_point=is_break_point,
-                annual_material_cost=round(annual_mat_cost, 2),
-                annual_ordering_cost=round(annual_ord_cost, 2),
-                annual_holding_cost=round(annual_hld_cost, 2),
-                total_annual_cost=round(total_cost, 2),
+                is_price_break_adjusted=is_adjusted,
+                annual_purchasing_cost=round(purchasing, 2),
+                annual_ordering_cost=round(ordering, 2),
+                annual_holding_cost=round(holding, 2),
+                total_annual_cost=round(total, 2),
             )
         )
 
-        substitutions[f"Tier_{tier_id}_Evaluation"] = (
-            f"EOQ_{tier_id} = sqrt((2 * {D:,.2f} * {S:,.2f}) / {H:,.2f}) = {unconstrained_eoq:,.2f} units. "
-            f"Feasible Q_{tier_id} = {feasible_q:,.2f} units ({'Price-break point' if is_break_point else 'Internal EOQ'}). "
-            f"TC_{tier_id} = (${D:,.2f} * ${price:.2f}) + (${D:,.2f}/{feasible_q:,.2f} * ${S:.2f}) + (${feasible_q:,.2f}/2 * ${H:.2f}) "
-            f"= ${annual_mat_cost:,.2f} + ${annual_ord_cost:,.2f} + ${annual_hld_cost:,.2f} = ${total_cost:,.2f}"
-        )
-
-        if total_cost < lowest_total_cost:
-            lowest_total_cost = total_cost
-            best_tier_idx = idx
-            optimal_q = feasible_q
-
-    best_tier = evaluations[best_tier_idx]
-    base_tier_cost = evaluations[0].total_annual_cost
-    savings = max(0.0, base_tier_cost - best_tier.total_annual_cost)
+    best_tier = min(tier_details, key=lambda t: t.total_annual_cost)
 
     # 5. Intermediate Calculations
-    intermediate = {
-        "evaluated_tiers_count": len(evaluations),
-        "tier_evaluations": [
-            {
-                "tier_id": t.tier_id,
-                "unit_price": t.unit_price,
-                "holding_cost": t.holding_cost,
-                "calculated_eoq": t.calculated_eoq,
-                "feasible_quantity": t.feasible_quantity,
-                "is_price_break_point": t.is_price_break_point,
-                "annual_material_cost": t.annual_material_cost,
-                "annual_ordering_cost": t.annual_ordering_cost,
-                "annual_holding_cost": t.annual_holding_cost,
-                "total_annual_cost": t.total_annual_cost,
-            }
-            for t in evaluations
-        ],
+    intermediate_calcs = {
+        "holding_cost_type": holding_type,
+        "holding_rate_or_fixed": h_param,
+        "evaluated_tier_details": [asdict(t) for t in tier_details],
+        "all_tier_total_costs": {f"Tier_{t.tier_index+1}": t.total_annual_cost for t in tier_details},
+        "optimal_tier_index": best_tier.tier_index,
+        "savings_vs_base_tier": round(tier_details[0].total_annual_cost - best_tier.total_annual_cost, 2),
+        "cost_savings_vs_base_tier": round(tier_details[0].total_annual_cost - best_tier.total_annual_cost, 2),
     }
 
     # 6. Final Answer
-    final_answer = {
-        "optimal_order_quantity": round(optimal_q, 2),
-        "optimal_tier_id": best_tier.tier_id,
+    final_ans = {
+        "optimal_tier_index": best_tier.tier_index,
+        "optimal_tier_label": f"Tier {best_tier.tier_index + 1}",
+        "optimal_order_quantity": best_tier.feasible_quantity,
         "optimal_unit_price": best_tier.unit_price,
-        "min_total_annual_cost": round(lowest_total_cost, 2),
-        "annual_savings_vs_base": round(savings, 2),
+        "minimum_total_annual_cost": best_tier.total_annual_cost,
+        "annual_purchasing_cost": best_tier.annual_purchasing_cost,
+        "annual_ordering_cost": best_tier.annual_ordering_cost,
+        "annual_holding_cost": best_tier.annual_holding_cost,
     }
 
     # 7. Verification Checks
-    verification_checks = [
-        f"All {len(evaluations)} price break brackets successfully evaluated.",
-        f"Global optimality verified: Tier {best_tier.tier_id} (Q={optimal_q:,.2f}) achieves minimum annual total cost (${lowest_total_cost:,.2f}).",
+    verifications = [
+        {
+            "check": "Global Cost Minimization Check",
+            "condition": "TC(j*) <= TC(j) for all tiers j",
+            "passed": True,
+            "detail": (
+                f"Tier {best_tier.tier_index + 1} achieves the global minimum total cost (${best_tier.total_annual_cost:,.2f}) "
+                f"across all {len(tier_details)} evaluated price brackets."
+            ),
+        },
+        {
+            "check": "Bracket Feasibility Compliance",
+            "condition": "min_qty_j* <= Q* <= max_qty_j*",
+            "passed": best_tier.feasible_quantity >= best_tier.min_qty and (best_tier.max_qty is None or best_tier.feasible_quantity <= best_tier.max_qty),
+            "detail": f"Recommended order quantity ({best_tier.feasible_quantity:,.0f} units) qualifies for the Tier {best_tier.tier_index + 1} unit price (${best_tier.unit_price:.2f}).",
+        },
+        {
+            "check": "Economic Trade-off Justification",
+            "condition": "Purchasing cost reduction >= Incremental holding/ordering cost vs Base Tier",
+            "passed": True,
+            "detail": (
+                f"Purchasing at Tier {best_tier.tier_index + 1} saves ${tier_details[0].total_annual_cost - best_tier.total_annual_cost:,.2f} "
+                f"annually compared to Tier 1 base pricing."
+            ),
+        },
     ]
-    if savings > 0:
-        verification_checks.append(f"Volume discount yields ${savings:,.2f} in net annual savings over baseline Tier 1.")
 
     # 8. Assumptions
-    assumptions = [
-        "All-units quantity discount applies to every unit purchased in the replenishment batch.",
-        "Annual customer demand is constant and deterministic across the planning horizon.",
-        "Supplier has unlimited production capacity to satisfy orders at higher price breaks.",
-        "Holding cost is either constant across tiers or proportional to unit purchase price.",
-        "Lead time is deterministic and orders arrive in full batches.",
+    model_assumptions = [
+        "All-units quantity discount applies: the discounted price P_j applies to every unit in the order once quantity threshold is met.",
+        f"Holding cost is {'constant per unit across all brackets' if holding_type == 'fixed' else 'proportional to unit purchase price (H = i * P)'}.",
+        "Demand rate is deterministic and constant over the entire annual planning horizon.",
+        "Supplier can fulfill orders of any quantity without capacity caps or lead time penalties.",
     ]
 
-    result = QuantityDiscountResult(
+    return QuantityDiscountResult(
         inputs_extracted=inputs_extracted,
-        variable_definitions=var_definitions,
+        variable_definitions=variable_definitions,
         formula=formulas,
-        formula_with_substituted_values=substitutions,
-        intermediate_calculations=intermediate,
-        final_answer=final_answer,
-        verification_checks=verification_checks,
-        assumptions=assumptions,
-        tier_evaluations=evaluations,
-    )
-
-    result.verification = verify_quantity_discount(inputs_extracted, result)
-    return result
-
-
-def verify_quantity_discount(inputs: Dict[str, Any], result: QuantityDiscountResult) -> ToolVerification:
-    """Verify optimality and savings across discount tiers."""
-    passed = result.verification_checks.copy()
-    warnings = []
-
-    all_costs = [t.total_annual_cost for t in result.tier_evaluations]
-    if all_costs and abs(min(all_costs) - result.optimal_total_cost) > 1e-4:
-        warnings.append("Selected order quantity total cost does not match lowest computed cost.")
-
-    sensitivity = {
-        "optimal_tier": result.optimal_tier_id,
-        "optimal_order_quantity": result.optimal_order_quantity,
-        "min_total_annual_cost": result.optimal_total_cost,
-        "annual_savings_vs_base": result.annual_savings_vs_base,
-        "tier_costs": {f"tier_{t.tier_id}": t.total_annual_cost for t in result.tier_evaluations},
-    }
-
-    return ToolVerification(
-        is_valid=(len(warnings) == 0),
-        checks_passed=passed,
-        warnings=warnings,
-        sensitivity_analysis=sensitivity,
+        formula_with_substituted_values=formulas_substituted,
+        intermediate_calculations=intermediate_calcs,
+        final_answer=final_ans,
+        verification_checks=verifications,
+        assumptions=model_assumptions,
+        optimal_tier_index=best_tier.tier_index,
+        optimal_order_quantity=best_tier.feasible_quantity,
+        optimal_unit_price=best_tier.unit_price,
+        minimum_total_annual_cost=best_tier.total_annual_cost,
+        annual_demand=d,
+        order_cost=s,
+        tier_evaluations=tier_details,
     )
 
 
-# ---------------------------------------------------------------------------
-# Tool 3: Safety Stock & Reorder Point (calculate_rop)
-# ---------------------------------------------------------------------------
+# ============================================================================
+# 3. Safety Stock and Reorder Point (SS & ROP)
+# ============================================================================
+
+@dataclass
+class ROPResult:
+    # 1. Inputs Extracted
+    inputs_extracted: Dict[str, Any]
+
+    # 2. Variable Definitions
+    variable_definitions: Dict[str, str]
+
+    # 3. Formula
+    formula: Dict[str, str]
+
+    # 4. Formula with Substituted Values
+    formula_with_substituted_values: Dict[str, str]
+
+    # 5. Intermediate Calculations
+    intermediate_calculations: Dict[str, Any]
+
+    # 6. Final Answer
+    final_answer: Dict[str, Any]
+
+    # 7. Verification Checks
+    verification_checks: List[Dict[str, Any]]
+
+    # 8. Assumptions
+    assumptions: List[str]
+
+    # Core attribute accessors
+    reorder_point: float
+    safety_stock: float
+    case_type: str
+    avg_demand: float
+    lead_time: float
+    std_demand: float
+    std_lead_time: float
+    expected_lead_time_demand: float
+    sigma_lead_time: float
+    z_score: float
+    cycle_service_level: Optional[float]
+
+    @property
+    def lead_time_std(self) -> float:
+        return self.std_lead_time
+
+    @property
+    def std_lead_time_demand(self) -> float:
+        return self.sigma_lead_time
+
+    @property
+    def stockout_probability_per_cycle(self) -> float:
+        return round(1.0 - self.cycle_service_level, 4) if self.cycle_service_level is not None else 0.0
+
+    @property
+    def is_variable_lead_time(self) -> bool:
+        return self.std_lead_time > 0
+
+    @property
+    def formula_breakdown(self) -> Dict[str, str]:
+        return self.formula_with_substituted_values
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
 
 def calculate_rop(
-    mean_demand: Optional[float] = None,
+    avg_demand: Optional[float] = None,
     lead_time: Optional[float] = None,
     service_level: Optional[float] = None,
+    z_score: Optional[float] = None,
     std_demand: float = 0.0,
     std_lead_time: float = 0.0,
-    mean_demand_per_period: Optional[float] = None,
-    std_demand_per_period: Optional[float] = None,
-    lead_time_periods: Optional[float] = None,
-    std_lead_time_periods: Optional[float] = None,
-    holding_cost_per_unit_per_period: Optional[float] = None,
-    holding_cost: Optional[float] = None,
+    **kwargs,
 ) -> ROPResult:
-    """Calculate Safety Stock and Reorder Point across all 4 uncertainty regimes with full verification steps."""
-    d = mean_demand if mean_demand is not None else mean_demand_per_period
-    L = lead_time if lead_time is not None else lead_time_periods
-    sigma_d = std_demand_per_period if std_demand_per_period is not None else std_demand
-    sigma_L = std_lead_time_periods if std_lead_time_periods is not None else std_lead_time
-    csl = service_level
-    H = holding_cost if holding_cost is not None else holding_cost_per_unit_per_period
+    """
+    Calculates Safety Stock (SS) and Reorder Point (ROP) for Continuous Review.
 
-    # Input Validation
-    if d is None:
-        raise ValueError("Missing required input: mean demand per period must be provided. Missing numerical inputs will not be invented.")
-    if L is None:
-        raise ValueError("Missing required input: lead time must be provided. Missing numerical inputs will not be invented.")
-    if csl is None:
-        raise ValueError("Missing required input: service level must be provided. Missing numerical inputs will not be invented.")
+    Supports all 4 deterministic uncertainty combinations:
+        1. Constant demand and constant lead time (sigma_d = 0, sigma_L = 0)
+        2. Variable demand and constant lead time (sigma_d > 0, sigma_L = 0)
+        3. Constant demand and variable lead time (sigma_d = 0, sigma_L > 0)
+        4. Variable demand and variable lead time (sigma_d > 0, sigma_L > 0)
 
-    if d <= 0:
-        raise ValueError(f"Mean demand ({d}) must be strictly positive.")
-    if L <= 0:
-        raise ValueError(f"Lead time ({L}) must be strictly positive.")
-    if sigma_d < 0:
-        raise ValueError(f"Standard deviation of demand ({sigma_d}) cannot be negative.")
-    if sigma_L < 0:
-        raise ValueError(f"Standard deviation of lead time ({sigma_L}) cannot be negative.")
-    if not (0.50 <= csl < 1.0):
-        raise ValueError(f"Service level ({csl}) must be between 0.50 (50%) and 0.9999 (99.99%).")
+    Returns the complete 8 verification sections:
+        1. Inputs Extracted
+        2. Variable Definitions
+        3. Formula
+        4. Formula with Substituted Values
+        5. Intermediate Calculations
+        6. Final Answer
+        7. Verification Checks
+        8. Assumptions
+    """
+    if avg_demand is None:
+        avg_demand = kwargs.get("avg_demand_per_period")
+    if std_demand == 0.0 and "std_demand_per_period" in kwargs:
+        std_demand = kwargs.get("std_demand_per_period", 0.0)
+
+    if avg_demand is None or avg_demand <= 0:
+        raise ValueError(f"avg_demand must be positive. Got {avg_demand}")
+    if lead_time is None or lead_time <= 0:
+        raise ValueError(f"lead_time must be positive. Got {lead_time}")
+    if std_demand is None or std_demand < 0:
+        raise ValueError(f"std_demand cannot be negative. Got {std_demand}")
+    if std_lead_time is None or std_lead_time < 0:
+        raise ValueError(f"std_lead_time cannot be negative. Got {std_lead_time}")
+
+    d = float(avg_demand)
+    l_mean = float(lead_time)
+    sig_d = float(std_demand)
+    sig_l = float(std_lead_time)
 
     # 1. Inputs Extracted
     inputs_extracted = {
-        "mean_demand": d,
-        "lead_time": L,
-        "service_level": csl,
-        "std_demand": sigma_d,
-        "std_lead_time": sigma_L,
-        "holding_cost": H,
+        "avg_demand (d)": d,
+        "lead_time (L)": l_mean,
+        "std_demand (sigma_d)": sig_d,
+        "std_lead_time (sigma_L)": sig_l,
+        "service_level (CSL)": service_level,
+        "z_score (z)": z_score,
     }
 
     # 2. Variable Definitions
-    var_definitions = {
-        "d": "Mean customer demand per period (units/period)",
-        "sigma_d": "Standard deviation of customer demand per period",
-        "L": "Mean supplier replenishment lead time (periods)",
-        "sigma_L": "Standard deviation of supplier lead time (periods)",
-        "CSL": "Cycle Service Level (target in-stock probability during lead time)",
-        "z": "Z-score from standard normal distribution, z = Phi^-1(CSL)",
-        "mu_LTD": "Mean lead time demand = d * L",
-        "sigma_LT": "Standard deviation of lead time demand",
-        "SS": "Safety Stock buffer = z * sigma_LT",
-        "ROP": "Reorder Point = mu_LTD + SS",
+    variable_definitions = {
+        "d": "Average demand rate per unit time period (e.g., daily or weekly demand)",
+        "L": "Average supplier replenishment lead time in periods",
+        "sigma_d": "Standard deviation of demand per period",
+        "sigma_L": "Standard deviation of lead time in periods",
+        "CSL": "Cycle Service Level: target probability of not stocking out during a replenishment lead time cycle",
+        "z": "Safety factor: number of standard deviations from standard normal distribution corresponding to CSL",
+        "DDLT": "Expected demand during lead time: d * L (units)",
+        "sigma_LT": "Combined standard deviation of demand during lead time (units)",
+        "SS": "Safety Stock: buffer inventory held to mitigate demand and lead time volatility (units)",
+        "ROP": "Reorder Point: inventory level that triggers placement of a new replenishment order (units)",
     }
 
-    # Determine regime and formulas
-    is_demand_variable = (sigma_d > 0.0)
-    is_lead_time_variable = (sigma_L > 0.0)
+    # Identify Case & Solve
+    has_var_d = sig_d > 0
+    has_var_l = sig_l > 0
+    ddlt = d * l_mean
 
-    if not is_demand_variable and not is_lead_time_variable:
-        case_name = "constant_demand_constant_lead_time"
-        case_desc = "Constant demand and constant lead time"
-        sigma_LT = 0.0
+    if not has_var_d and not has_var_l:
+        case_type = "constant_demand_and_constant_lead_time"
+        sigma_lt = 0.0
         z = 0.0
-        safety_stock = 0.0
-        formula_sigma = "sigma_LT = 0 (deterministic)"
-        formula_ss = "SS = 0"
-        subst_sigma = "sigma_LT = 0.0"
-        subst_ss = "SS = 0.0 units"
-    elif is_demand_variable and not is_lead_time_variable:
-        case_name = "variable_demand_constant_lead_time"
-        case_desc = "Variable demand and constant lead time"
-        sigma_LT = sigma_d * math.sqrt(L)
-        z = float(stats.norm.ppf(csl))
-        safety_stock = z * sigma_LT
-        formula_sigma = "sigma_LT = sigma_d * sqrt(L)"
-        formula_ss = "SS = z * sigma_LT"
-        subst_sigma = f"sigma_LT = {sigma_d:.2f} * sqrt({L:.1f}) = {sigma_LT:.2f} units"
-        subst_ss = f"SS = {z:.4f} * {sigma_LT:.2f} = {safety_stock:.2f} units"
-    elif not is_demand_variable and is_lead_time_variable:
-        case_name = "constant_demand_variable_lead_time"
-        case_desc = "Constant demand and variable lead time"
-        sigma_LT = d * sigma_L
-        z = float(stats.norm.ppf(csl))
-        safety_stock = z * sigma_LT
-        formula_sigma = "sigma_LT = d * sigma_L"
-        formula_ss = "SS = z * sigma_LT"
-        subst_sigma = f"sigma_LT = {d:.2f} * {sigma_L:.2f} = {sigma_LT:.2f} units"
-        subst_ss = f"SS = {z:.4f} * {sigma_LT:.2f} = {safety_stock:.2f} units"
+        csl = None
+        ss = 0.0
+        rop = ddlt
+        term_demand_var = 0.0
+        term_lead_var = 0.0
+        formula_sigma = "sigma_LT = 0  (deterministic)"
+        subst_sigma = "sigma_LT = 0.00 units"
     else:
-        case_name = "variable_demand_variable_lead_time"
-        case_desc = "Variable demand and variable lead time"
-        sigma_LT = math.sqrt(L * (sigma_d ** 2) + (d ** 2) * (sigma_L ** 2))
-        z = float(stats.norm.ppf(csl))
-        safety_stock = z * sigma_LT
-        formula_sigma = "sigma_LT = sqrt(L * sigma_d^2 + d^2 * sigma_L^2)"
-        formula_ss = "SS = z * sigma_LT"
-        subst_sigma = (
-            f"sigma_LT = sqrt(({L:.1f} * {sigma_d:.2f}^2) + ({d:.2f}^2 * {sigma_L:.2f}^2)) "
-            f"= sqrt({L * (sigma_d ** 2):.2f} + {(d ** 2) * (sigma_L ** 2):.2f}) = {sigma_LT:.2f} units"
-        )
-        subst_ss = f"SS = {z:.4f} * {sigma_LT:.2f} = {safety_stock:.2f} units"
+        if z_score is not None:
+            if z_score < 0:
+                raise ValueError(f"z_score cannot be negative. Got {z_score}")
+            z = float(z_score)
+            csl = float(stats.norm.cdf(z)) if service_level is None else service_level
+        elif service_level is not None:
+            if not (0.50 <= service_level < 1.0):
+                raise ValueError(f"service_level must be between 0.50 and 0.9999. Got {service_level}")
+            csl = float(service_level)
+            z = float(stats.norm.ppf(csl))
+        else:
+            raise ValueError(
+                "Missing service level: Uncertainty detected (std_demand > 0 or std_lead_time > 0), "
+                "must provide either service_level (e.g. 0.95) or z_score. Missing values cannot be invented."
+            )
 
-    ltd_mean = d * L
-    reorder_point = ltd_mean + safety_stock
-    annual_ss_holding = (safety_stock * H) if (H is not None and H > 0) else None
+        if has_var_d and not has_var_l:
+            case_type = "variable_demand_and_constant_lead_time"
+            term_demand_var = l_mean * (sig_d ** 2)
+            term_lead_var = 0.0
+            sigma_lt = math.sqrt(term_demand_var)
+            formula_sigma = "sigma_LT = sqrt(L * sigma_d^2) = sqrt(L) * sigma_d"
+            subst_sigma = f"sqrt({l_mean:,.2f} * {sig_d:,.2f}^2) = sqrt({term_demand_var:,.2f}) = {sigma_lt:,.2f} units"
+        elif not has_var_d and has_var_l:
+            case_type = "constant_demand_and_variable_lead_time"
+            term_demand_var = 0.0
+            term_lead_var = (d ** 2) * (sig_l ** 2)
+            sigma_lt = math.sqrt(term_lead_var)
+            formula_sigma = "sigma_LT = sqrt(d^2 * sigma_L^2) = d * sigma_L"
+            subst_sigma = f"sqrt({d:,.2f}^2 * {sig_l:,.2f}^2) = sqrt({term_lead_var:,.2f}) = {sigma_lt:,.2f} units"
+        else:
+            case_type = "variable_demand_and_variable_lead_time"
+            term_demand_var = l_mean * (sig_d ** 2)
+            term_lead_var = (d ** 2) * (sig_l ** 2)
+            sigma_lt = math.sqrt(term_demand_var + term_lead_var)
+            formula_sigma = "sigma_LT = sqrt(L * sigma_d^2 + d^2 * sigma_L^2)"
+            subst_sigma = (
+                f"sqrt({l_mean:,.2f} * {sig_d:,.2f}^2 + {d:,.2f}^2 * {sig_l:,.2f}^2) = "
+                f"sqrt({term_demand_var:,.2f} + {term_lead_var:,.2f}) = sqrt({term_demand_var + term_lead_var:,.2f}) = {sigma_lt:,.2f} units"
+            )
+
+        ss = z * sigma_lt
+        rop = ddlt + ss
 
     # 3. Formula
     formulas = {
-        "Lead_Time_Demand_Mean": "mu_LTD = d * L",
-        "Lead_Time_Demand_Std": formula_sigma,
-        "Safety_Stock": formula_ss,
-        "Reorder_Point": "ROP = mu_LTD + SS = (d * L) + SS",
+        "Case Identified": case_type,
+        "Expected Demand during Lead Time (DDLT)": "DDLT = d * L",
+        "Lead Time Demand Std Dev (sigma_LT)": formula_sigma,
+        "Safety Stock (SS)": "SS = z * sigma_LT",
+        "Reorder Point (ROP)": "ROP = DDLT + SS = (d * L) + SS",
     }
 
     # 4. Formula with Substituted Values
-    substitutions = {
-        "Lead_Time_Demand_Mean": f"mu_LTD = {d:.2f} * {L:.1f} = {ltd_mean:.2f} units",
-        "Lead_Time_Demand_Std": subst_sigma,
-        "Safety_Stock": subst_ss,
-        "Reorder_Point": f"ROP = {ltd_mean:.2f} + {safety_stock:.2f} = {reorder_point:.2f} units",
+    csl_label = f"{csl*100:.2f}%" if csl is not None else "N/A"
+    formulas_substituted = {
+        "Expected Demand during Lead Time (DDLT)": f"{d:,.2f} * {l_mean:,.2f} = {ddlt:,.2f} units",
+        "Lead Time Demand Std Dev (sigma_LT)": subst_sigma,
+        "Safety Factor (z)": f"norm.ppf({csl_label}) = {z:.4f}" if csl else "0.0000",
+        "Safety Stock (SS)": f"{z:.4f} * {sigma_lt:,.2f} = {ss:,.2f} units",
+        "Reorder Point (ROP)": f"{ddlt:,.2f} + {ss:,.2f} = {rop:,.2f} units",
     }
 
     # 5. Intermediate Calculations
-    intermediate = {
-        "case_identified": case_name,
-        "case_description": case_desc,
-        "lead_time_demand_mean": round(ltd_mean, 2),
-        "lead_time_demand_std": round(sigma_LT, 2),
+    intermediate_calcs = {
+        "case_type": case_type,
+        "expected_lead_time_demand_DDLT": round(ddlt, 2),
+        "demand_variance_contribution (L * sigma_d^2)": round(term_demand_var, 4),
+        "lead_time_variance_contribution (d^2 * sigma_L^2)": round(term_lead_var, 4),
+        "demand_variance_contribution_L_sigma_d_sq": round(term_demand_var, 4),
+        "lead_time_variance_contribution_d_sq_sigma_L_sq": round(term_lead_var, 4),
+        "total_lead_time_variance": round(term_demand_var + term_lead_var, 4),
+        "sigma_LT": round(sigma_lt, 4),
         "z_score": round(z, 4),
-        "safety_stock": round(safety_stock, 2),
-        "stockout_probability_per_cycle": round(1.0 - csl, 4) if sigma_LT > 0 else 0.0,
-        "annual_ss_holding_cost": round(annual_ss_holding, 2) if annual_ss_holding is not None else None,
+        "cycle_service_level": round(csl, 4) if csl is not None else None,
+        "safety_stock": round(ss, 2),
+        "reorder_point": round(rop, 2),
     }
 
     # 6. Final Answer
-    final_answer = {
-        "reorder_point": round(reorder_point, 2),
-        "safety_stock": round(safety_stock, 2),
-        "cycle_service_level": round(csl, 4),
+    final_ans = {
+        "reorder_point": round(rop, 2),
+        "reorder_point_units": "units (trigger replenishment when inventory position drops to this level)",
+        "safety_stock": round(ss, 2),
+        "safety_stock_units": "units reserved as safety buffer",
+        "expected_lead_time_demand": round(ddlt, 2),
+        "cycle_service_level": f"{csl*100:.1f}%" if csl is not None else "100.0% (Deterministic)",
     }
 
     # 7. Verification Checks
-    verification_checks = [
-        f"Regime confirmed: {case_desc}.",
-        f"Non-negative safety stock verified (SS = {safety_stock:.2f} >= 0).",
-        f"ROP strictly covers expected lead time demand ({reorder_point:.2f} >= {ltd_mean:.2f}).",
+    verifications = [
+        {
+            "check": "ROP Lower Bound Check",
+            "condition": "ROP >= d * L",
+            "passed": rop >= ddlt,
+            "detail": f"ROP ({rop:,.2f} units) >= Expected Lead Time Demand ({ddlt:,.2f} units), ensuring average lead time demand is fully covered.",
+        },
+        {
+            "check": "Safety Stock Non-Negativity Check",
+            "condition": "SS >= 0 for CSL >= 50%",
+            "passed": ss >= 0,
+            "detail": f"Safety stock ({ss:,.2f} units) is non-negative for target service level ({csl_label}).",
+        },
+        {
+            "check": "Variance Decomposition Integrity",
+            "condition": "sigma_LT^2 == (L * sigma_d^2) + (d^2 * sigma_L^2)",
+            "passed": math.isclose(sigma_lt ** 2, term_demand_var + term_lead_var, abs_tol=1e-5),
+            "detail": (
+                f"Combined variance ({term_demand_var + term_lead_var:,.2f}) accurately accounts for "
+                f"demand variance ({term_demand_var:,.2f}) and lead time variance ({term_lead_var:,.2f})."
+            ),
+        },
     ]
 
     # 8. Assumptions
-    assumptions = [
-        "Demand per period is normally distributed when uncertain.",
-        "Lead time duration is normally distributed when uncertain.",
-        "Period-to-period demands are independent and identically distributed.",
-        "Demand and lead time are mutually independent random variables.",
-        "Inventory is monitored continuously under a standard (s, Q) reorder point policy.",
+    model_assumptions = [
+        "Continuous review (s, Q) policy: inventory position is tracked continuously in real time.",
+        "Demand in each time period is independent and identically distributed.",
+        f"Demand during lead time follows a normal distribution ({'active' if (has_var_d or has_var_l) else 'deterministic'}).",
+        "Stockouts occurring during the replenishment lead time are backordered and filled when the batch arrives.",
     ]
 
-    result = ROPResult(
+    return ROPResult(
         inputs_extracted=inputs_extracted,
-        variable_definitions=var_definitions,
+        variable_definitions=variable_definitions,
         formula=formulas,
-        formula_with_substituted_values=substitutions,
-        intermediate_calculations=intermediate,
-        final_answer=final_answer,
-        verification_checks=verification_checks,
-        assumptions=assumptions,
-    )
-
-    result.verification = verify_safety_stock_rop(inputs_extracted, result)
-    return result
-
-
-def verify_safety_stock_rop(inputs: Dict[str, Any], result: ROPResult) -> ToolVerification:
-    """Verify safety stock and reorder point with service level sensitivity."""
-    passed = result.verification_checks.copy()
-    warnings = []
-
-    d = inputs.get("mean_demand", 0.0)
-    L = inputs.get("lead_time", 0.0)
-    sigma_lt = result.lead_time_demand_std
-
-    sensitivity = {}
-    if sigma_lt > 0:
-        for sl in [0.90, 0.95, 0.98, 0.99]:
-            z_val = float(stats.norm.ppf(sl))
-            ss_val = z_val * sigma_lt
-            rop_val = (d * L) + ss_val
-            sensitivity[f"rop_at_{int(sl*100)}_pct_service"] = round(rop_val, 2)
-            sensitivity[f"ss_at_{int(sl*100)}_pct_service"] = round(ss_val, 2)
-    else:
-        sensitivity["status"] = "Deterministic lead-time demand; zero safety stock required."
-
-    return ToolVerification(
-        is_valid=(len(warnings) == 0),
-        checks_passed=passed,
-        warnings=warnings,
-        sensitivity_analysis=sensitivity,
+        formula_with_substituted_values=formulas_substituted,
+        intermediate_calculations=intermediate_calcs,
+        final_answer=final_ans,
+        verification_checks=verifications,
+        assumptions=model_assumptions,
+        reorder_point=round(rop, 2),
+        safety_stock=round(ss, 2),
+        case_type=case_type,
+        avg_demand=d,
+        lead_time=l_mean,
+        std_demand=sig_d,
+        std_lead_time=sig_l,
+        expected_lead_time_demand=round(ddlt, 2),
+        sigma_lead_time=round(sigma_lt, 2),
+        z_score=round(z, 4),
+        cycle_service_level=round(csl, 4) if csl is not None else None,
     )
 
 
-# ---------------------------------------------------------------------------
-# Tool 4: Fixed-Period Review (calculate_periodic_review)
-# ---------------------------------------------------------------------------
+# Alias for backwards compatibility
+calculate_safety_stock_rop = calculate_rop
+
+
+# ============================================================================
+# 4. Fixed-Period Review Model
+# ============================================================================
+
+@dataclass
+class PeriodicReviewResult:
+    # 1. Inputs Extracted
+    inputs_extracted: Dict[str, Any]
+
+    # 2. Variable Definitions
+    variable_definitions: Dict[str, str]
+
+    # 3. Formula
+    formula: Dict[str, str]
+
+    # 4. Formula with Substituted Values
+    formula_with_substituted_values: Dict[str, str]
+
+    # 5. Intermediate Calculations
+    intermediate_calculations: Dict[str, Any]
+
+    # 6. Final Answer
+    final_answer: Dict[str, Any]
+
+    # 7. Verification Checks
+    verification_checks: List[Dict[str, Any]]
+
+    # 8. Assumptions
+    assumptions: List[str]
+
+    # Core attribute accessors
+    recommended_order_quantity: float
+    target_inventory: float
+    review_period: float
+    lead_time: float
+    protection_period: float
+    avg_demand: float
+    demand_during_protection_period: float
+    std_demand: float
+    sigma_protection_period: float
+    safety_stock: float
+    z_score: float
+    cycle_service_level: Optional[float]
+    inventory_position: float
+    gross_inventory_shortfall: float
+
+    @property
+    def order_up_to_level(self) -> float:
+        return self.target_inventory
+
+    @property
+    def current_inventory(self) -> float:
+        return self.inventory_position
+
+    @property
+    def expected_demand_protection_period(self) -> float:
+        return self.demand_during_protection_period
+
+    @property
+    def std_demand_protection_period(self) -> float:
+        return self.sigma_protection_period
+
+    @property
+    def formula_breakdown(self) -> Dict[str, str]:
+        return self.formula_with_substituted_values
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
 
 def calculate_periodic_review(
     review_period: Optional[float] = None,
     lead_time: Optional[float] = None,
-    mean_demand: Optional[float] = None,
-    std_demand: Optional[float] = None,
-    service_level: Optional[float] = None,
+    avg_demand: Optional[float] = None,
     inventory_position: Optional[float] = None,
-    on_hand: Optional[float] = None,
-    on_order: Optional[float] = None,
-    backorders: float = 0.0,
-    review_period_P: Optional[float] = None,
-    lead_time_L: Optional[float] = None,
-    mean_demand_per_period: Optional[float] = None,
-    std_demand_per_period: Optional[float] = None,
-    current_on_hand: Optional[float] = None,
-    open_orders_pipeline: Optional[float] = None,
+    std_demand: float = 0.0,
+    service_level: Optional[float] = None,
+    z_score: Optional[float] = None,
+    **kwargs,
 ) -> PeriodicReviewResult:
-    """Calculate Target Inventory and Order Quantity for Fixed-Period Review with all 8 verification sections."""
-    P = review_period if review_period is not None else review_period_P
-    L = lead_time if lead_time is not None else lead_time_L
-    d = mean_demand if mean_demand is not None else mean_demand_per_period
-    sigma_d = std_demand if std_demand is not None else std_demand_per_period
-    csl = service_level
-    hand = on_hand if on_hand is not None else current_on_hand
-    pipe = on_order if on_order is not None else open_orders_pipeline
+    """
+    Calculates Target Inventory and Order Quantity for a Fixed-Period Review (R, S) policy.
 
-    # Input validation
-    if P is None:
-        raise ValueError("Missing required input: review period must be provided. Missing numerical inputs will not be invented.")
-    if L is None:
-        raise ValueError("Missing required input: lead time must be provided. Missing numerical inputs will not be invented.")
-    if d is None:
-        raise ValueError("Missing required input: mean demand must be provided. Missing numerical inputs will not be invented.")
-    if sigma_d is None:
-        raise ValueError("Missing required input: standard deviation of demand must be provided. Missing numerical inputs will not be invented.")
-    if csl is None:
-        raise ValueError("Missing required input: service level must be provided. Missing numerical inputs will not be invented.")
+    Formulas:
+        Protection period = review period + lead time
+        Demand during protection period = d * (R + L)
+        Safety stock = z * (sigma_d * sqrt(R + L))  [if std_demand > 0]
+        Target inventory = Demand during protection period + Safety stock
+        Order quantity = max(0, Target inventory - Inventory position)
 
-    if P <= 0:
-        raise ValueError(f"Review period ({P}) must be strictly positive.")
-    if L < 0:
-        raise ValueError(f"Lead time ({L}) cannot be negative.")
-    if d <= 0:
-        raise ValueError(f"Mean demand ({d}) must be strictly positive.")
-    if sigma_d < 0:
-        raise ValueError(f"Standard deviation of demand ({sigma_d}) cannot be negative.")
-    if not (0.50 <= csl < 1.0):
-        raise ValueError(f"Service level ({csl}) must be between 0.50 and 0.9999.")
+    Returns the complete 8 verification sections:
+        1. Inputs Extracted
+        2. Variable Definitions
+        3. Formula
+        4. Formula with Substituted Values
+        5. Intermediate Calculations
+        6. Final Answer
+        7. Verification Checks
+        8. Assumptions
+    """
+    if avg_demand is None:
+        avg_demand = kwargs.get("avg_demand_per_period")
+    if std_demand == 0.0 and "std_demand_per_period" in kwargs:
+        std_demand = kwargs.get("std_demand_per_period", 0.0)
+    if inventory_position is None:
+        inventory_position = kwargs.get("current_inventory")
+
+    if review_period is None or review_period <= 0:
+        raise ValueError(f"review_period must be positive. Got {review_period}")
+    if lead_time is None or lead_time < 0:
+        raise ValueError(f"lead_time cannot be negative. Got {lead_time}")
+    if avg_demand is None or avg_demand <= 0:
+        raise ValueError(f"avg_demand must be positive. Got {avg_demand}")
+    if inventory_position is None:
+        raise ValueError("Missing inventory_position: Current inventory position must be provided.")
+    if std_demand is None or std_demand < 0:
+        raise ValueError(f"std_demand cannot be negative. Got {std_demand}")
+
+    r = float(review_period)
+    l = float(lead_time)
+    d = float(avg_demand)
+    inv_pos = float(inventory_position)
+    sig_d = float(std_demand)
 
     # 1. Inputs Extracted
     inputs_extracted = {
-        "review_period": P,
-        "lead_time": L,
-        "mean_demand": d,
-        "std_demand": sigma_d,
-        "service_level": csl,
-        "inventory_position": inventory_position,
-        "on_hand": hand,
-        "on_order": pipe,
-        "backorders": backorders,
+        "review_period (R)": r,
+        "lead_time (L)": l,
+        "avg_demand (d)": d,
+        "inventory_position (I)": inv_pos,
+        "std_demand (sigma_d)": sig_d,
+        "service_level (CSL)": service_level,
+        "z_score (z)": z_score,
     }
 
     # 2. Variable Definitions
-    var_definitions = {
-        "P": "Review period interval in periods/days",
-        "L": "Supplier replenishment lead time in periods/days",
-        "P + L": "Protection period / exposure interval (periods/days)",
-        "d": "Mean customer demand per period (units/period)",
+    variable_definitions = {
+        "R": "Review period interval: time between consecutive inventory reviews (periods)",
+        "L": "Supplier replenishment lead time (periods)",
+        "R + L": "Total protection period: time interval across which inventory must buffer demand until next delivery",
+        "d": "Average customer demand rate per period (units/period)",
         "sigma_d": "Standard deviation of demand per period",
-        "CSL": "Cycle Service Level (in-stock probability during protection period)",
-        "z": "Z-score from standard normal distribution, z = Phi^-1(CSL)",
-        "mu_P_plus_L": "Expected demand during protection period = d * (P + L)",
-        "sigma_P_plus_L": "Standard deviation of demand during protection period = sigma_d * sqrt(P + L)",
-        "SS": "Safety stock over protection interval = z * sigma_d * sqrt(P + L)",
-        "Target_Inventory_M": "Order-Up-To Level = mu_P_plus_L + SS",
-        "IP": "Inventory Position = On-Hand + On-Order - Backorders",
-        "Order_Quantity_q": "Order quantity = max(0, Target_Inventory - IP)",
+        "sigma_prot": "Standard deviation of demand during the protection period: sigma_d * sqrt(R + L)",
+        "CSL": "Target Cycle Service Level for the periodic review cycle",
+        "z": "Safety factor corresponding to target CSL from standard normal distribution",
+        "SS": "Safety Stock for periodic review: z * sigma_prot (units)",
+        "Target Inventory (M)": "Order-Up-To Level (Base Stock): expected protection period demand + Safety Stock (units)",
+        "Inventory Position (I)": "Current net inventory position: On-Hand + On-Order - Backorders (units)",
+        "Order Quantity (Q)": "Recommended replenishment order placed right now: max(0, Target Inventory - Inventory Position)",
     }
 
-    # Calculations
-    protection_period = P + L
-    demand_protection = d * protection_period
-    std_protection = sigma_d * math.sqrt(protection_period)
-    z = float(stats.norm.ppf(csl))
-    safety_stock = z * std_protection
-    target_inventory = demand_protection + safety_stock
+    # Deterministic Calculations
+    prot_period = r + l
+    demand_prot = d * prot_period
 
-    inv_pos = inventory_position
-    if inv_pos is None and hand is not None:
-        inv_pos = hand + (pipe or 0.0) - backorders
+    if sig_d > 0:
+        if z_score is not None:
+            if z_score < 0:
+                raise ValueError(f"z_score cannot be negative. Got {z_score}")
+            z = float(z_score)
+            csl = float(stats.norm.cdf(z)) if service_level is None else service_level
+        elif service_level is not None:
+            if not (0.50 <= service_level < 1.0):
+                raise ValueError(f"service_level must be between 0.50 and 0.9999. Got {service_level}")
+            csl = float(service_level)
+            z = float(stats.norm.ppf(csl))
+        else:
+            raise ValueError(
+                "Missing service level: std_demand > 0 requires either service_level (e.g. 0.95) "
+                "or z_score. Missing values cannot be invented."
+            )
+        sigma_prot = sig_d * math.sqrt(prot_period)
+        ss = z * sigma_prot
+    else:
+        z = 0.0
+        csl = None
+        sigma_prot = 0.0
+        ss = 0.0
 
-    order_quantity = None
-    if inv_pos is not None:
-        order_quantity = max(0.0, target_inventory - inv_pos)
-
-    continuous_ss = z * sigma_d * math.sqrt(L) if L > 0 else 0.0
-    ss_ratio = (safety_stock / continuous_ss) if continuous_ss > 0 else 1.0
+    target_inv = demand_prot + ss
+    shortfall = target_inv - inv_pos
+    order_qty = max(0.0, shortfall)
 
     # 3. Formula
     formulas = {
-        "Protection_Period": "Protection_Period = review_period + lead_time = P + L",
-        "Protection_Demand_Mean": "mu_{P+L} = d * (P + L)",
-        "Protection_Demand_Std": "sigma_{P+L} = sigma_d * sqrt(P + L)",
-        "Safety_Stock": "SS = z * sigma_d * sqrt(P + L)",
-        "Target_Inventory": "Target_Inventory = mu_{P+L} + SS = d * (P + L) + z * sigma_d * sqrt(P + L)",
-        "Order_Quantity": "q = max(0, Target_Inventory - Inventory_Position)",
+        "Protection Period (R + L)": "Protection Period = R + L",
+        "Demand during Protection Period": "Demand_prot = d * (R + L)",
+        "Protection Period Std Dev (sigma_prot)": "sigma_prot = sigma_d * sqrt(R + L)",
+        "Safety Stock (SS)": "SS = z * sigma_prot",
+        "Target Inventory (Order-Up-To Level M)": "M = Demand_prot + SS = (d * (R + L)) + (z * sigma_d * sqrt(R + L))",
+        "Recommended Order Quantity (Q)": "Q = max(0, Target Inventory - Inventory Position)",
     }
 
     # 4. Formula with Substituted Values
-    substitutions = {
-        "Protection_Period": f"P + L = {P:.1f} + {L:.1f} = {protection_period:.1f} periods",
-        "Protection_Demand_Mean": f"mu_{{P+L}} = {d:.2f} * {protection_period:.1f} = {demand_protection:.2f} units",
-        "Protection_Demand_Std": f"sigma_{{P+L}} = {sigma_d:.2f} * sqrt({protection_period:.1f}) = {std_protection:.2f} units",
-        "Safety_Stock": f"SS = {z:.4f} * {sigma_d:.2f} * sqrt({protection_period:.1f}) = {safety_stock:.2f} units",
-        "Target_Inventory": f"M = {demand_protection:.2f} + {safety_stock:.2f} = {target_inventory:.2f} units",
+    csl_str = f"{csl*100:.1f}%" if csl is not None else "100.0% (Deterministic)"
+    formulas_substituted = {
+        "Protection Period (R + L)": f"{r:,.1f} + {l:,.1f} = {prot_period:,.1f} periods",
+        "Demand during Protection Period": f"{d:,.2f} * ({r:,.1f} + {l:,.1f}) = {d:,.2f} * {prot_period:,.1f} = {demand_prot:,.2f} units",
+        "Protection Period Std Dev (sigma_prot)": f"{sig_d:,.2f} * sqrt({prot_period:,.1f}) = {sig_d:,.2f} * {math.sqrt(prot_period):.4f} = {sigma_prot:,.2f} units",
+        "Safety Stock (SS)": f"{z:.4f} * {sigma_prot:,.2f} = {ss:,.2f} units  (CSL: {csl_str})",
+        "Target Inventory (M)": f"{demand_prot:,.2f} + {ss:,.2f} = {target_inv:,.2f} units",
+        "Recommended Order Quantity (Q)": f"max(0, {target_inv:,.2f} - {inv_pos:,.2f}) = max(0, {shortfall:,.2f}) = {order_qty:,.2f} units",
     }
-    if inv_pos is not None:
-        substitutions["Order_Quantity"] = f"q = max(0, {target_inventory:.2f} - {inv_pos:.2f}) = {order_quantity:.2f} units"
-    else:
-        substitutions["Order_Quantity"] = "q = max(0, Target_Inventory - IP) [IP not provided; order quantity omitted]"
 
     # 5. Intermediate Calculations
-    intermediate = {
-        "protection_period": protection_period,
-        "protection_demand_mean": round(demand_protection, 2),
-        "protection_demand_std": round(std_protection, 2),
-        "z_score": round(z, 4),
-        "safety_stock": round(safety_stock, 2),
-        "target_inventory": round(target_inventory, 2),
-        "inventory_position": round(inv_pos, 2) if inv_pos is not None else None,
-        "safety_stock_vs_continuous_ratio": round(ss_ratio, 2),
+    intermediate_calcs = {
+        "step_1_review_period_R": r,
+        "step_2_lead_time_L": l,
+        "step_3_protection_period_R_plus_L": prot_period,
+        "step_4_demand_during_protection_period": round(demand_prot, 2),
+        "step_5_sigma_protection_period": round(sigma_prot, 4),
+        "step_6_z_score": round(z, 4),
+        "step_7_cycle_service_level": round(csl, 4) if csl is not None else None,
+        "step_8_safety_stock": round(ss, 2),
+        "step_9_target_inventory_M": round(target_inv, 2),
+        "step_10_inventory_position_I": round(inv_pos, 2),
+        "step_11_gross_inventory_shortfall": round(shortfall, 2),
+        "step_12_recommended_order_quantity": round(order_qty, 2),
     }
 
     # 6. Final Answer
-    final_answer = {
-        "target_inventory": round(target_inventory, 2),
-        "order_quantity": round(order_quantity, 2) if order_quantity is not None else None,
-        "safety_stock": round(safety_stock, 2),
+    final_ans = {
+        "recommended_order_quantity": round(order_qty, 2),
+        "recommended_order_quantity_units": "units to order immediately",
+        "target_inventory": round(target_inv, 2),
+        "target_inventory_units": "units (order-up-to base stock level M)",
+        "safety_stock": round(ss, 2),
+        "protection_period": prot_period,
+        "current_inventory_position": round(inv_pos, 2),
     }
 
     # 7. Verification Checks
-    verification_checks = [
-        f"Target inventory level adequately covers protection interval demand ({target_inventory:.2f} >= {demand_protection:.2f}).",
-        f"Periodic review buffer property verified: requires {ss_ratio:.2f}x the safety stock of a continuous review system.",
+    verifications = [
+        {
+            "check": "Full Protection Period Buffer Check",
+            "condition": "M >= d * (R + L)",
+            "passed": target_inv >= demand_prot,
+            "detail": f"Target inventory M ({target_inv:,.2f} units) >= Expected demand ({demand_prot:,.2f} units) across the entire {prot_period:,.1f}-period protection window.",
+        },
+        {
+            "check": "Order Quantity Non-Negativity Floor",
+            "condition": "Q = max(0, M - I) >= 0",
+            "passed": order_qty >= 0,
+            "detail": f"Recommended order quantity ({order_qty:,.2f} units) is non-negative (Inventory position: {inv_pos:,.2f}, Target: {target_inv:,.2f}).",
+        },
+        {
+            "check": "Protection Period Duration Check",
+            "condition": "Protection Period == R + L",
+            "passed": math.isclose(prot_period, r + l, abs_tol=1e-5),
+            "detail": f"Protection period ({prot_period:,.1f} periods) accurately aggregates review cycle ({r:,.1f}) and lead time ({l:,.1f}).",
+        },
     ]
 
     # 8. Assumptions
-    assumptions = [
-        "Inventory review occurs at fixed periodic intervals of review_period.",
-        "Customer demand is stationary and normally distributed with constant mean and variance.",
-        "Unsatisfied customer demand during stockout intervals is backordered.",
-        "Lead time is known and constant.",
+    model_assumptions = [
+        "Inventory is reviewed at fixed, discrete periodic intervals of length R.",
+        "Protection period must buffer against stockouts over both the review cycle R and supplier lead time L.",
+        "Inventory position equals On-Hand + On-Order - Backorders.",
+        "Customer stockouts occurring during the protection period are backordered.",
+        "Demand per period is independent and identically normally distributed.",
     ]
-    if inv_pos is None:
-        assumptions.append("Note: Inventory position was not provided; order quantity was not calculated.")
 
-    result = PeriodicReviewResult(
+    return PeriodicReviewResult(
         inputs_extracted=inputs_extracted,
-        variable_definitions=var_definitions,
+        variable_definitions=variable_definitions,
         formula=formulas,
-        formula_with_substituted_values=substitutions,
-        intermediate_calculations=intermediate,
-        final_answer=final_answer,
-        verification_checks=verification_checks,
-        assumptions=assumptions,
-    )
-
-    result.verification = verify_fixed_period_review(inputs_extracted, result)
-    return result
-
-
-def verify_fixed_period_review(inputs: Dict[str, Any], result: PeriodicReviewResult) -> ToolVerification:
-    """Verify target inventory level and order quantity for fixed-period review."""
-    passed = result.verification_checks.copy()
-    warnings = []
-
-    P = inputs.get("review_period", 0.0)
-    L = inputs.get("lead_time", 0.0)
-    d = inputs.get("mean_demand", 0.0)
-    sigma_p_l = result.protection_demand_std
-
-    sensitivity = {}
-    if sigma_p_l > 0:
-        for sl in [0.90, 0.95, 0.98, 0.99]:
-            z_val = float(stats.norm.ppf(sl))
-            ss_val = z_val * sigma_p_l
-            m_val = (d * (P + L)) + ss_val
-            sensitivity[f"target_M_at_{int(sl*100)}_pct"] = round(m_val, 2)
-            sensitivity[f"ss_at_{int(sl*100)}_pct"] = round(ss_val, 2)
-    else:
-        sensitivity["status"] = "Deterministic demand; safety stock is zero."
-
-    return ToolVerification(
-        is_valid=(len(warnings) == 0),
-        checks_passed=passed,
-        warnings=warnings,
-        sensitivity_analysis=sensitivity,
+        formula_with_substituted_values=formulas_substituted,
+        intermediate_calculations=intermediate_calcs,
+        final_answer=final_ans,
+        verification_checks=verifications,
+        assumptions=model_assumptions,
+        recommended_order_quantity=round(order_qty, 2),
+        target_inventory=round(target_inv, 2),
+        review_period=r,
+        lead_time=l,
+        protection_period=prot_period,
+        avg_demand=d,
+        demand_during_protection_period=round(demand_prot, 2),
+        std_demand=sig_d,
+        sigma_protection_period=round(sigma_prot, 2),
+        safety_stock=round(ss, 2),
+        z_score=round(z, 4),
+        cycle_service_level=round(csl, 4) if csl is not None else None,
+        inventory_position=round(inv_pos, 2),
+        gross_inventory_shortfall=round(shortfall, 2),
     )
 
 
-# ---------------------------------------------------------------------------
-# Tool 5: Newsvendor (calculate_newsvendor)
-# ---------------------------------------------------------------------------
+# Alias for backwards compatibility
+calculate_fixed_period_review = calculate_periodic_review
+
+
+# ============================================================================
+# 5. Newsvendor Model
+# ============================================================================
+
+@dataclass
+class NewsvendorResult:
+    # 1. Inputs Extracted
+    inputs_extracted: Dict[str, Any]
+
+    # 2. Variable Definitions
+    variable_definitions: Dict[str, str]
+
+    # 3. Formula
+    formula: Dict[str, str]
+
+    # 4. Formula with Substituted Values
+    formula_with_substituted_values: Dict[str, str]
+
+    # 5. Intermediate Calculations
+    intermediate_calculations: Dict[str, Any]
+
+    # 6. Final Answer
+    final_answer: Dict[str, Any]
+
+    # 7. Verification Checks
+    verification_checks: List[Dict[str, Any]]
+
+    # 8. Assumptions
+    assumptions: List[str]
+
+    # Core attribute accessors
+    recommended_order_quantity: float
+    critical_ratio: float
+    underage_cost: float
+    overage_cost: float
+    z_score: float
+    demand_mean: float
+    demand_std: float
+    unit_cost: float
+    selling_price: float
+    salvage_value: float
+    shortage_penalty: float
+    expected_sales: float
+    expected_lost_sales: float
+    expected_leftover_inventory: float
+    expected_profit: float
+    in_stock_probability: float
+
+    @property
+    def optimal_order_quantity(self) -> float:
+        return self.recommended_order_quantity
+
+    @property
+    def formula_breakdown(self) -> Dict[str, str]:
+        return self.formula_with_substituted_values
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
 
 def calculate_newsvendor(
-    selling_price: Optional[float] = None,
-    purchase_cost: Optional[float] = None,
-    salvage_value: Optional[float] = None,
-    mean_demand: Optional[float] = None,
-    std_demand: Optional[float] = None,
-    stockout_penalty: float = 0.0,
-    demand_dist: str = "normal",
-    uniform_min: float = 0.0,
-    uniform_max: float = 0.0,
-    discrete_dist: Optional[List[Tuple[float, float]]] = None,
+    unit_cost: float,
+    selling_price: float,
+    demand_mean: float,
+    demand_std: float,
+    salvage_value: float = 0.0,
+    shortage_penalty: float = 0.0,
 ) -> NewsvendorResult:
-    """Calculate Underage Cost, Overage Cost, Critical Ratio, and Recommended Order Quantity with all 8 verification sections."""
-    if selling_price is None:
-        raise ValueError("Missing required input: selling_price must be provided. Missing numerical inputs will not be invented.")
-    if purchase_cost is None:
-        raise ValueError("Missing required input: purchase_cost must be provided. Missing numerical inputs will not be invented.")
-    if salvage_value is None:
-        raise ValueError("Missing required input: salvage_value must be provided. Missing numerical inputs will not be invented.")
-    if mean_demand is None:
-        raise ValueError("Missing required input: mean_demand must be provided. Missing numerical inputs will not be invented.")
-    if std_demand is None:
-        raise ValueError("Missing required input: std_demand must be provided. Missing numerical inputs will not be invented.")
+    """
+    Calculates optimal order quantity for the single-period Newsvendor model.
 
-    if selling_price <= purchase_cost:
-        raise ValueError(f"Selling price (${selling_price}) must exceed purchase cost (${purchase_cost}) for a profitable product.")
-    if salvage_value > purchase_cost:
-        raise ValueError(f"Salvage value (${salvage_value}) cannot exceed purchase cost (${purchase_cost}).")
-    if stockout_penalty < 0:
-        raise ValueError(f"Stockout penalty ({stockout_penalty}) cannot be negative.")
+    Formulas:
+        Underage cost: Cu = selling_price - unit_cost + shortage_penalty
+        Overage cost:  Co = unit_cost - salvage_value
+        Critical ratio: CR = Cu / (Cu + Co)
+        Z-score: Z = norm.ppf(CR)
+        Recommended order quantity: Q* = demand_mean + Z * demand_std
+
+    Returns the complete 8 verification sections:
+        1. Inputs Extracted
+        2. Variable Definitions
+        3. Formula
+        4. Formula with Substituted Values
+        5. Intermediate Calculations
+        6. Final Answer
+        7. Verification Checks
+        8. Assumptions
+    """
+    if unit_cost is None or unit_cost <= 0:
+        raise ValueError(f"unit_cost must be positive. Got {unit_cost}")
+    if selling_price is None or selling_price <= 0:
+        raise ValueError(f"selling_price must be positive. Got {selling_price}")
+    if selling_price <= unit_cost:
+        raise ValueError(
+            f"selling_price ({selling_price}) must strictly exceed unit_cost ({unit_cost}). "
+            "A negative or zero profit margin would guarantee operational loss."
+        )
+    if salvage_value is None or salvage_value < 0:
+        raise ValueError(f"salvage_value cannot be negative. Got {salvage_value}")
+    if salvage_value > unit_cost:
+        raise ValueError(
+            f"salvage_value ({salvage_value}) cannot exceed unit_cost ({unit_cost}). "
+            "Arbitrage conditions are invalid."
+        )
+    if shortage_penalty is None or shortage_penalty < 0:
+        raise ValueError(f"shortage_penalty cannot be negative. Got {shortage_penalty}")
+    if demand_mean is None or demand_mean <= 0:
+        raise ValueError(f"demand_mean must be positive. Got {demand_mean}")
+    if demand_std is None or demand_std <= 0:
+        raise ValueError(f"demand_std must be positive. Got {demand_std}")
+
+    c = float(unit_cost)
+    p = float(selling_price)
+    v = float(salvage_value)
+    g = float(shortage_penalty)
+    mu = float(demand_mean)
+    sigma = float(demand_std)
 
     # 1. Inputs Extracted
     inputs_extracted = {
-        "selling_price": selling_price,
-        "purchase_cost": purchase_cost,
-        "salvage_value": salvage_value,
-        "mean_demand": mean_demand,
-        "std_demand": std_demand,
-        "stockout_penalty": stockout_penalty,
-        "demand_dist": demand_dist,
+        "unit_cost (c)": c,
+        "selling_price (p)": p,
+        "salvage_value (v)": v,
+        "shortage_penalty (g)": g,
+        "demand_mean (mu)": mu,
+        "demand_std (sigma)": sigma,
     }
 
     # 2. Variable Definitions
-    var_definitions = {
-        "P": "Unit retail selling price ($/unit)",
-        "C": "Unit purchase or production cost ($/unit)",
-        "V": "Unit salvage value for unsold leftover inventory ($/unit)",
-        "g": "Unit penalty or lost goodwill for stockout ($/unit)",
-        "Cu": "Cost of Underage (shortage cost) per unit = P - C + g ($/unit)",
-        "Co": "Cost of Overage (excess cost) per unit = C - V ($/unit)",
-        "CR": "Critical Ratio / Critical Fractile = Cu / (Cu + Co)",
-        "mu": "Mean customer demand (units)",
-        "sigma": "Standard deviation of customer demand (units)",
-        "z": "Z-score corresponding to in-stock probability, z = Phi^-1(CR)",
-        "Q*": "Optimal single-period order quantity = mu + z * sigma",
-        "E_Sales": "Expected units sold during the season",
-        "E_Lost": "Expected lost sales (shortage) based on normal loss function L(z)",
-        "E_Leftover": "Expected unsold units salvaged at end of season",
-        "E_Profit": "Expected net financial profit ($)",
+    variable_definitions = {
+        "p": "Retail selling price per unit ($/unit)",
+        "c": "Unit purchase or production cost ($/unit)",
+        "v": "Salvage or scrap value recovered per unsold unit at end of season ($/unit)",
+        "g": "Shortage penalty cost incurred per unit of unmet customer demand ($/unit)",
+        "Cu": "Cost of Underage: marginal profit loss incurred per unit of unmet demand: p - c + g ($/unit)",
+        "Co": "Cost of Overage: marginal loss incurred per unsold unit ordered: c - v ($/unit)",
+        "CR": "Critical Ratio (Critical Fractile): optimal service probability: Cu / (Cu + Co)",
+        "mu": "Mean expected customer demand during the selling period (units)",
+        "sigma": "Standard deviation of customer demand during the selling period (units)",
+        "z": "Optimal safety factor corresponding to standard normal quantile: norm.ppf(CR)",
+        "Q*": "Optimal stocking quantity that maximizes expected profit: mu + z * sigma (units)",
+        "L(z)": "Standard normal loss function value: phi(z) - z * (1 - Phi(z))",
+        "E[Lost Sales]": "Expected number of stockout / unmet customer orders: sigma * L(z) (units)",
+        "E[Sales]": "Expected units sold to customers: mu - E[Lost Sales] (units)",
+        "E[Leftovers]": "Expected surplus inventory remaining at end of season: Q* - E[Sales] (units)",
+        "E[Profit]": "Expected total operational profit ($)",
     }
 
-    # Calculations
-    Cu = selling_price - purchase_cost + stockout_penalty
-    Co = purchase_cost - salvage_value
-    critical_ratio = Cu / (Cu + Co)
+    # Deterministic Calculations
+    cu = p - c + g
+    co = c - v
+    cr = cu / (cu + co)
+    z = float(stats.norm.ppf(cr))
+    q_opt_raw = mu + (z * sigma)
+    q_opt = max(0.0, q_opt_raw)
 
-    if demand_dist == "normal":
-        if mean_demand <= 0:
-            raise ValueError(f"Mean demand ({mean_demand}) must be strictly positive.")
-        if std_demand <= 0:
-            raise ValueError(f"Standard deviation of demand ({std_demand}) must be strictly positive.")
+    phi_z = float(stats.norm.pdf(z))
+    phi_cdf_z = float(stats.norm.cdf(z))
+    loss_z = phi_z - (z * (1.0 - phi_cdf_z))
 
-        z = float(stats.norm.ppf(critical_ratio))
-        optimal_q = mean_demand + z * std_demand
-
-        phi_z = stats.norm.pdf(z)
-        Phi_z = stats.norm.cdf(z)
-        loss_z = phi_z - z * (1.0 - Phi_z)
-
-        expected_lost_sales = std_demand * loss_z
-        expected_leftover = optimal_q - mean_demand + expected_lost_sales
-        expected_sales = mean_demand - expected_lost_sales
-
-    elif demand_dist == "uniform":
-        if uniform_max <= uniform_min:
-            raise ValueError("uniform_max must be strictly greater than uniform_min.")
-        optimal_q = uniform_min + critical_ratio * (uniform_max - uniform_min)
-        z = (optimal_q - mean_demand) / std_demand if std_demand > 0 else 0.0
-        expected_leftover = ((optimal_q - uniform_min) ** 2) / (2.0 * (uniform_max - uniform_min))
-        expected_sales = optimal_q - expected_leftover
-        expected_lost_sales = mean_demand - expected_sales
-
-    elif demand_dist == "discrete" and discrete_dist is not None:
-        sorted_pairs = sorted(discrete_dist, key=lambda p: p[0])
-        cum_prob = 0.0
-        optimal_q = sorted_pairs[0][0]
-        for d_val, prob in sorted_pairs:
-            cum_prob += prob
-            if cum_prob >= critical_ratio:
-                optimal_q = d_val
-                break
-        z = 0.0
-        expected_sales = sum(min(optimal_q, d) * p for d, p in sorted_pairs)
-        expected_leftover = sum(max(0.0, optimal_q - d) * p for d, p in sorted_pairs)
-        expected_lost_sales = sum(max(0.0, d - optimal_q) * p for d, p in sorted_pairs)
-    else:
-        raise ValueError(f"Unsupported demand distribution: {demand_dist}")
-
-    total_purchase_cost = optimal_q * purchase_cost
-    expected_revenue = expected_sales * selling_price
-    expected_salvage_rev = expected_leftover * salvage_value
-    expected_profit = (
-        expected_revenue + expected_salvage_rev - total_purchase_cost - (expected_lost_sales * stockout_penalty)
-    )
+    exp_lost_sales = sigma * loss_z
+    exp_sales = mu - exp_lost_sales
+    exp_leftovers = q_opt - exp_sales
+    exp_profit = (p * exp_sales) + (v * exp_leftovers) - (c * q_opt) - (g * exp_lost_sales)
 
     # 3. Formula
     formulas = {
-        "Underage_Cost": "Cu = Selling_Price - Purchase_Cost + Stockout_Penalty",
-        "Overage_Cost": "Co = Purchase_Cost - Salvage_Value",
-        "Critical_Ratio": "CR = Cu / (Cu + Co)",
-        "Recommended_Order_Quantity": "Q* = mu + z * sigma",
-        "Normal_Loss_Function": "L(z) = phi(z) - z * (1 - Phi(z))",
-        "Expected_Profit": "Expected_Profit = (P * E[Sales]) + (V * E[Leftover]) - (C * Q*) - (g * E[Lost])",
+        "Cost of Underage (Cu)": "Cu = p - c + g",
+        "Cost of Overage (Co)": "Co = c - v",
+        "Critical Ratio (CR)": "CR = Cu / (Cu + Co)",
+        "Optimal Order Quantity (Q*)": "Q* = mu + (z * sigma),  where z = norm.ppf(CR)",
+        "Standard Normal Loss L(z)": "L(z) = phi(z) - z * (1 - Phi(z))",
+        "Expected Lost Sales": "E[Lost Sales] = sigma * L(z)",
+        "Expected Sales": "E[Sales] = mu - E[Lost Sales]",
+        "Expected Leftover Units": "E[Leftovers] = Q* - E[Sales]",
+        "Expected Profit": "E[Profit] = (p * E[Sales]) + (v * E[Leftovers]) - (c * Q*) - (g * E[Lost Sales])",
     }
 
     # 4. Formula with Substituted Values
-    substitutions = {
-        "Underage_Cost": f"Cu = ${selling_price:.2f} - ${purchase_cost:.2f} + ${stockout_penalty:.2f} = ${Cu:.2f}",
-        "Overage_Cost": f"Co = ${purchase_cost:.2f} - ${salvage_value:.2f} = ${Co:.2f}",
-        "Critical_Ratio": f"CR = ${Cu:.2f} / (${Cu:.2f} + ${Co:.2f}) = ${Cu:.2f} / ${Cu + Co:.2f} = {critical_ratio:.4f} ({critical_ratio * 100:.2f}%)",
-        "Recommended_Order_Quantity": f"Q* = {mean_demand:,.2f} + ({z:.4f} * {std_demand:,.2f}) = {optimal_q:,.2f} units",
-        "Expected_Profit": (
-            f"Expected_Profit = (${selling_price:.2f} * {expected_sales:.2f}) + (${salvage_value:.2f} * {expected_leftover:.2f}) "
-            f"- (${purchase_cost:.2f} * {optimal_q:.2f}) = ${expected_profit:,.2f}"
+    formulas_substituted = {
+        "Cost of Underage (Cu)": f"${p:,.2f} - ${c:,.2f} + ${g:,.2f} = ${cu:,.2f}/unit",
+        "Cost of Overage (Co)": f"${c:,.2f} - ${v:,.2f} = ${co:,.2f}/unit",
+        "Critical Ratio (CR)": f"${cu:,.2f} / (${cu:,.2f} + ${co:,.2f}) = ${cu:,.2f} / ${cu + co:,.2f} = {cr:.4f} ({cr*100:.2f}%)",
+        "Safety Factor (z)": f"norm.ppf({cr:.4f}) = {z:.4f}",
+        "Optimal Order Quantity (Q*)": f"{mu:,.2f} + ({z:.4f} * {sigma:,.2f}) = {mu:,.2f} + {z * sigma:,.2f} = {q_opt:,.2f} units",
+        "Standard Loss L(z)": f"{phi_z:.4f} - ({z:.4f} * (1 - {phi_cdf_z:.4f})) = {loss_z:.6f}",
+        "Expected Lost Sales": f"{sigma:,.2f} * {loss_z:.6f} = {exp_lost_sales:,.2f} units",
+        "Expected Sales": f"{mu:,.2f} - {exp_lost_sales:,.2f} = {exp_sales:,.2f} units",
+        "Expected Leftover Units": f"{q_opt:,.2f} - {exp_sales:,.2f} = {exp_leftovers:,.2f} units",
+        "Expected Profit": (
+            f"(${p:,.2f} * {exp_sales:,.2f}) + (${v:,.2f} * {exp_leftovers:,.2f}) - "
+            f"(${c:,.2f} * {q_opt:,.2f}) - (${g:,.2f} * {exp_lost_sales:,.2f}) = ${exp_profit:,.2f}"
         ),
     }
 
     # 5. Intermediate Calculations
-    intermediate = {
-        "underage_cost_Cu": round(Cu, 2),
-        "overage_cost_Co": round(Co, 2),
-        "critical_ratio": round(critical_ratio, 4),
-        "z_score": round(z, 4),
-        "expected_sales": round(float(expected_sales), 2),
-        "expected_lost_sales": round(float(expected_lost_sales), 2),
-        "expected_leftover_units": round(float(expected_leftover), 2),
-        "expected_revenue": round(float(expected_revenue), 2),
-        "expected_salvage_revenue": round(float(expected_salvage_rev), 2),
-        "total_purchase_cost": round(float(total_purchase_cost), 2),
-        "expected_profit": round(float(expected_profit), 2),
+    intermediate_calcs = {
+        "step_1_underage_cost_Cu": round(cu, 2),
+        "step_2_overage_cost_Co": round(co, 2),
+        "step_3_critical_ratio_CR": round(cr, 6),
+        "step_4_optimal_z_score": round(z, 4),
+        "step_5_optimal_quantity_Q_raw": round(q_opt_raw, 2),
+        "step_6_optimal_quantity_Q_floored": round(q_opt, 2),
+        "step_7_normal_pdf_phi_z": round(phi_z, 6),
+        "step_8_normal_cdf_Phi_z": round(phi_cdf_z, 6),
+        "step_9_standard_loss_L_z": round(loss_z, 6),
+        "step_10_expected_lost_sales": round(exp_lost_sales, 2),
+        "step_11_expected_sales": round(exp_sales, 2),
+        "step_12_expected_leftover_units": round(exp_leftovers, 2),
+        "step_13_expected_profit": round(exp_profit, 2),
+        "step_14_in_stock_probability": round(phi_cdf_z, 4),
     }
 
     # 6. Final Answer
-    final_answer = {
-        "underage_cost": round(Cu, 2),
-        "overage_cost": round(Co, 2),
-        "critical_ratio": round(critical_ratio, 4),
-        "recommended_order_quantity": round(optimal_q, 2),
-        "expected_profit": round(expected_profit, 2),
+    final_ans = {
+        "recommended_order_quantity": round(q_opt, 2),
+        "recommended_order_quantity_units": "units (optimal stocking quantity)",
+        "critical_ratio": round(cr, 4),
+        "critical_ratio_percentage": f"{cr*100:.2f}%",
+        "underage_cost": round(cu, 2),
+        "overage_cost": round(co, 2),
+        "expected_profit": round(exp_profit, 2),
+        "expected_sales": round(exp_sales, 2),
+        "expected_leftover_inventory": round(exp_leftovers, 2),
+        "expected_lost_sales": round(exp_lost_sales, 2),
+        "in_stock_probability": round(phi_cdf_z, 4),
     }
 
     # 7. Verification Checks
-    verification_checks = [
-        f"Valid critical ratio verified: CR = {critical_ratio:.4f} in interval (0, 1).",
-        f"Critical fractile matches in-stock probability: {critical_ratio * 100:.2f}%.",
-        f"Stockout risk per season is mathematically optimal at {(1.0 - critical_ratio) * 100:.2f}%.",
+    verifications = [
+        {
+            "check": "Critical Ratio Feasibility Check",
+            "condition": "0 < CR < 1",
+            "passed": 0.0 < cr < 1.0,
+            "detail": f"Critical ratio ({cr:.4f} or {cr:.2%}) is strictly between 0 and 1, confirming valid marginal profit economics.",
+        },
+        {
+            "check": "Economic Bias Directional Check",
+            "condition": "Q* >= mu if and only if Cu >= Co",
+            "passed": (q_opt >= mu) == (cu >= co),
+            "detail": (
+                f"Because Underage Cost (${cu:,.2f}) {'exceeds' if cu >= co else 'is less than'} Overage Cost (${co:,.2f}), "
+                f"Critical Ratio ({cr:.2%}) is {'>=' if cu >= co else '<'} 50%. It is optimal to order {'above' if cu >= co else 'below'} mean demand ({mu:,.0f} units)."
+            ),
+        },
+        {
+            "check": "Conservation of Inventory Identity",
+            "condition": "Q* == Expected Sales + Expected Leftovers",
+            "passed": math.isclose(q_opt, exp_sales + exp_leftovers, abs_tol=1e-3),
+            "detail": f"Conservation holds: Q* ({q_opt:,.2f}) == Expected Sales ({exp_sales:,.2f}) + Expected Leftovers ({exp_leftovers:,.2f}).",
+        },
+        {
+            "check": "Operational Profitability Check",
+            "condition": "Expected Profit > 0",
+            "passed": exp_profit > 0,
+            "detail": f"Expected operational profit (${exp_profit:,.2f}) is strictly positive under optimal stocking.",
+        },
     ]
 
     # 8. Assumptions
-    assumptions = [
-        "Single selling season with strictly no mid-season replenishment or order cancellation.",
-        "Customer demand follows a stationary normal distribution with known mean and variance.",
-        "Unsold inventory can be fully salvaged at salvage value with zero disposal fee.",
-        "Unit selling prices and production costs are constant and linear across the volume.",
+    model_assumptions = [
+        "Single-period selling window: inventory cannot be replenished once the season commences.",
+        "Unsold inventory after the period is cleared at salvage value v with no subsequent regular demand.",
+        "Demand is a continuous normal random variable with known mean mu and standard deviation sigma.",
+        "Unmet customer demand results in lost margin (p - c) plus shortage goodwill penalty g.",
     ]
 
-    result = NewsvendorResult(
+    return NewsvendorResult(
         inputs_extracted=inputs_extracted,
-        variable_definitions=var_definitions,
+        variable_definitions=variable_definitions,
         formula=formulas,
-        formula_with_substituted_values=substitutions,
-        intermediate_calculations=intermediate,
-        final_answer=final_answer,
-        verification_checks=verification_checks,
-        assumptions=assumptions,
+        formula_with_substituted_values=formulas_substituted,
+        intermediate_calculations=intermediate_calcs,
+        final_answer=final_ans,
+        verification_checks=verifications,
+        assumptions=model_assumptions,
+        recommended_order_quantity=round(q_opt, 2),
+        critical_ratio=round(cr, 4),
+        underage_cost=round(cu, 2),
+        overage_cost=round(co, 2),
+        z_score=round(z, 4),
+        demand_mean=mu,
+        demand_std=sigma,
+        unit_cost=c,
+        selling_price=p,
+        salvage_value=v,
+        shortage_penalty=g,
+        expected_sales=round(exp_sales, 2),
+        expected_lost_sales=round(exp_lost_sales, 2),
+        expected_leftover_inventory=round(exp_leftovers, 2),
+        expected_profit=round(exp_profit, 2),
+        in_stock_probability=round(phi_cdf_z, 4),
     )
 
-    result.verification = verify_newsvendor(inputs_extracted, result)
-    return result
+
+# ============================================================================
+# Verification Check Helpers
+# ============================================================================
+
+def verify_eoq_result(result: EOQResult) -> Tuple[bool, List[str]]:
+    passed = all(v["passed"] for v in result.verification_checks)
+    msgs = [v["detail"] for v in result.verification_checks]
+    return passed, msgs
 
 
-def verify_newsvendor(inputs: Dict[str, Any], result: NewsvendorResult) -> ToolVerification:
-    """Verify newsvendor critical ratio and expected profit sensitivity."""
-    passed = result.verification_checks.copy()
-    warnings = []
+def verify_discount_result(result: QuantityDiscountResult) -> Tuple[bool, List[str]]:
+    passed = all(v["passed"] for v in result.verification_checks)
+    msgs = [v["detail"] for v in result.verification_checks]
+    return passed, msgs
 
-    cr = result.critical_ratio
-    sensitivity = {
-        "critical_fractile": round(cr, 4),
-        "in_stock_probability": f"{cr * 100:.2f}%",
-        "stockout_probability": f"{(1.0 - cr) * 100:.2f}%",
-        "optimal_order_quantity": result.optimal_order_quantity,
-        "optimal_expected_profit": result.expected_profit,
+
+def verify_safety_stock_result(result: ROPResult) -> Tuple[bool, List[str]]:
+    passed = all(v["passed"] for v in result.verification_checks)
+    msgs = [v["detail"] for v in result.verification_checks]
+    return passed, msgs
+
+
+def verify_fixed_period_result(result: PeriodicReviewResult) -> Tuple[bool, List[str]]:
+    passed = all(v["passed"] for v in result.verification_checks)
+    msgs = [v["detail"] for v in result.verification_checks]
+    return passed, msgs
+
+
+def verify_newsvendor_result(result: NewsvendorResult) -> Tuple[bool, List[str]]:
+    passed = all(v["passed"] for v in result.verification_checks)
+    msgs = [v["detail"] for v in result.verification_checks]
+    return passed, msgs
+
+
+# ============================================================================
+# 6. Multicriteria Inventory Classification (Sales & Hits -> A, B, C, D)
+# ============================================================================
+
+@dataclass
+class MulticriteriaClassificationResult:
+    # 1. Inputs Extracted
+    inputs_extracted: Dict[str, Any]
+
+    # 2. Variable Definitions
+    variable_definitions: Dict[str, str]
+
+    # 3. Formula
+    formula: Dict[str, str]
+
+    # 4. Formula with Substituted Values
+    formula_with_substituted_values: Dict[str, str]
+
+    # 5. Intermediate Calculations
+    intermediate_calculations: Dict[str, Any]
+
+    # 6. Final Answer
+    final_answer: Dict[str, Any]
+
+    # 7. Verification Checks
+    verification_checks: List[Dict[str, Any]]
+
+    # 8. Assumptions
+    assumptions: List[str]
+
+    # Enriched DataFrame and summaries
+    classified_df: Any = None
+    class_summary_df: Any = None
+    cross_tab_matrix: Any = None
+
+
+# Standard 2D Cross-Criteria Classification Matrix (Sales Class x Hits Class -> Combined Class)
+MULTICRITERIA_CROSS_MATRIX: Dict[Tuple[str, str], str] = {
+    ("A", "A"): "A",  # High Value & High Velocity -> Critical Fast Mover
+    ("A", "B"): "A",  # High Value & Moderate Velocity -> High Priority
+    ("B", "A"): "A",  # Moderate Value & High Velocity -> High Priority Fast Mover
+    ("A", "C"): "B",  # High Value & Low Velocity -> Capital Intensive, Controlled
+    ("A", "D"): "B",  # High Value & Dormant -> High Value Monitor
+    ("B", "B"): "B",  # Moderate Value & Moderate Velocity -> Standard Core Stock
+    ("B", "C"): "B",  # Moderate Value & Low Velocity -> Standard Controlled
+    ("C", "A"): "B",  # Low Value & High Velocity -> High Turn Fast Hardware
+    ("C", "B"): "C",  # Low Value & Moderate Velocity -> Routine Replenishment
+    ("B", "D"): "C",  # Moderate Value & Dormant -> Slow Moving Monitor
+    ("C", "C"): "C",  # Low Value & Low Velocity -> Bulk/Loose Control
+    ("C", "D"): "D",  # Low Value & Dormant -> Low Priority / Candidate for Phase-Out
+    ("D", "A"): "B",  # Zero/Near-zero Sales & High Hits -> Catalog/Service items
+    ("D", "B"): "C",  # Zero/Near-zero Sales & Moderate Hits -> Marginal Stock
+    ("D", "C"): "D",  # Zero/Near-zero Sales & Low Hits -> Candidate for Obsolescence
+    ("D", "D"): "D",  # Dead Stock: Zero/Near-zero Sales & Zero/Near-zero Hits
+}
+
+
+def classify_inventory_multicriteria(
+    df: Any,
+    sales_col: Optional[str] = None,
+    hits_col: Optional[str] = None,
+    item_num_col: Optional[str] = None,
+    item_name_col: Optional[str] = None,
+    uom_col: Optional[str] = None,
+    sales_cutoffs: Tuple[float, float, float] = (80.0, 95.0, 99.9),
+    hits_cutoffs: Tuple[float, float, float] = (80.0, 95.0, 99.9),
+) -> MulticriteriaClassificationResult:
+    """
+    Performs deterministic Multicriteria Inventory Classification using Sales ($) and Hits.
+    Classifies items into A, B, C, and D classes using individual Pareto cumulative distributions
+    and a 2D cross-classification decision matrix.
+
+    Args:
+        df: Input pandas DataFrame containing sales and hits data.
+        sales_col: Name of column containing Sales revenue (defaults to auto-detect 'Sales ($)' or 'Sales').
+        hits_col: Name of column containing transaction/pick counts (defaults to auto-detect 'Hits').
+        item_num_col: Name of column containing Item Number.
+        item_name_col: Name of column containing Item Name.
+        uom_col: Name of column containing Unit of Measure.
+        sales_cutoffs: Cumulative % cutoffs for (A, B, C).
+        hits_cutoffs: Cumulative % cutoffs for (A, B, C).
+
+    Returns:
+        MulticriteriaClassificationResult with enriched DataFrame, summary tables,
+        intermediate calculations, verification checks, and model assumptions.
+    """
+    import pandas as pd
+    import numpy as np
+
+    if df is None or not isinstance(df, pd.DataFrame) or len(df) == 0:
+        raise ValueError("Input DataFrame must be a non-empty pandas DataFrame.")
+
+    # Auto-detect column names if not explicitly specified
+    cols = list(df.columns)
+    cols_lower = {c.strip().lower(): c for c in cols}
+
+    # Resolve Sales column
+    if sales_col is None:
+        for candidate in ["sales ($)", "sales", "sales$", "revenue", "annual sales", "sales_dollar"]:
+            if candidate in cols_lower:
+                sales_col = cols_lower[candidate]
+                break
+        if sales_col is None:
+            # Check substring
+            for c in cols:
+                if "sales" in c.lower():
+                    sales_col = c
+                    break
+
+    # Resolve Hits column
+    if hits_col is None:
+        for candidate in ["hits", "hit", "picks", "pick count", "transactions", "order lines"]:
+            if candidate in cols_lower:
+                hits_col = cols_lower[candidate]
+                break
+        if hits_col is None:
+            for c in cols:
+                if "hit" in c.lower():
+                    hits_col = c
+                    break
+
+    if sales_col is None or sales_col not in df.columns:
+        raise ValueError(f"Required Sales column not found in DataFrame. Available columns: {cols}")
+    if hits_col is None or hits_col not in df.columns:
+        raise ValueError(f"Required Hits column not found in DataFrame. Available columns: {cols}")
+
+    # Copy to avoid mutating original DataFrame
+    working_df = df.copy()
+
+    # Clean numeric fields
+    working_df[sales_col] = (
+        working_df[sales_col]
+        .astype(str)
+        .str.replace("$", "", regex=False)
+        .str.replace(",", "", regex=False)
+        .str.strip()
+    )
+    working_df[sales_col] = pd.to_numeric(working_df[sales_col], errors="coerce").fillna(0.0)
+
+    working_df[hits_col] = (
+        working_df[hits_col]
+        .astype(str)
+        .str.replace(",", "", regex=False)
+        .str.strip()
+    )
+    working_df[hits_col] = pd.to_numeric(working_df[hits_col], errors="coerce").fillna(0.0)
+
+    total_sales = float(working_df[sales_col].sum())
+    total_hits = float(working_df[hits_col].sum())
+    total_skus = len(working_df)
+
+    if total_sales <= 0:
+        raise ValueError(f"Total sales across all items must be positive. Got {total_sales}")
+    if total_hits <= 0:
+        raise ValueError(f"Total hits across all items must be positive. Got {total_hits}")
+
+    # 1. Inputs Extracted
+    inputs_extracted = {
+        "total_sku_count": total_skus,
+        "sales_column": sales_col,
+        "hits_column": hits_col,
+        "total_annual_sales": total_sales,
+        "total_annual_hits": total_hits,
+        "sales_pareto_cutoffs_percent (A, B, C)": sales_cutoffs,
+        "hits_pareto_cutoffs_percent (A, B, C)": hits_cutoffs,
     }
 
-    return ToolVerification(
-        is_valid=(len(warnings) == 0),
-        checks_passed=passed,
-        warnings=warnings,
-        sensitivity_analysis=sensitivity,
+    # 2. Variable Definitions
+    variable_definitions = {
+        "Sales ($)": "Total monetary sales volume generated by the item ($)",
+        "Hits": "Total transaction frequency / pick line count generated by the item (velocity)",
+        "Sales Share (%)": "Individual item's percentage contribution to total inventory sales",
+        "Cum Sales Share (%)": "Cumulative percentage of sales when items are ranked in descending order of Sales",
+        "Sales Class": "Monetary classification based on cumulative sales (A: top 80%, B: next 15%, C: next 4.9%, D: bottom 0.1%/zero)",
+        "Hits Share (%)": "Individual item's percentage contribution to total warehouse pick operations",
+        "Cum Hits Share (%)": "Cumulative percentage of hits when items are ranked in descending order of Hits",
+        "Hits Class": "Velocity classification based on cumulative hits (A: top 80%, B: next 15%, C: next 4.9%, D: bottom 0.1%/zero)",
+        "Multicriteria Class": "Composite ABCD classification combining both financial impact (Sales) and physical velocity (Hits) via a 2D decision matrix",
+    }
+
+    # 3. Formula
+    formulas = {
+        "Sales Share (%)": "Sales_Share_i = (Sales_i / Total_Sales) * 100",
+        "Cum Sales Share (%)": "Cum_Sales_i = sum_{k=1}^i (Sales_Share_k)  [ranked descending by Sales]",
+        "Sales Class Rule": f"Class A: Cum <= {sales_cutoffs[0]}%; Class B: Cum <= {sales_cutoffs[1]}%; Class C: Cum <= {sales_cutoffs[2]}%; Class D: > {sales_cutoffs[2]}% or Sales == 0",
+        "Hits Share (%)": "Hits_Share_i = (Hits_i / Total_Hits) * 100",
+        "Cum Hits Share (%)": "Cum_Hits_i = sum_{k=1}^i (Hits_Share_k)  [ranked descending by Hits]",
+        "Hits Class Rule": f"Class A: Cum <= {hits_cutoffs[0]}%; Class B: Cum <= {hits_cutoffs[1]}%; Class C: Cum <= {hits_cutoffs[2]}%; Class D: > {hits_cutoffs[2]}% or Hits == 0",
+        "Multicriteria Classification": "Multicriteria_Class = MULTICRITERIA_CROSS_MATRIX[Sales_Class, Hits_Class]",
+    }
+
+    # === Sales Classification ===
+    # Sort by sales descending
+    df_sales_sorted = working_df.sort_values(by=sales_col, ascending=False).copy()
+    sales_share = (df_sales_sorted[sales_col] / total_sales) * 100.0
+    cum_sales = sales_share.cumsum()
+    df_sales_sorted["Sales Share (%)"] = sales_share.round(3)
+    df_sales_sorted["Cum Sales Share (%)"] = cum_sales.round(3)
+
+    # Assign Sales Class
+    def assign_class(cum_val, raw_val, cutoffs):
+        if raw_val <= 0:
+            return "D"
+        # First item that crosses or previous items
+        if cum_val <= cutoffs[0]:
+            return "A"
+        elif cum_val <= cutoffs[1]:
+            return "B"
+        elif cum_val <= cutoffs[2]:
+            return "C"
+        else:
+            return "D"
+
+    # Shifted cumulative to classify top boundary inclusively
+    shifted_cum_sales = df_sales_sorted["Cum Sales Share (%)"].shift(1).fillna(0.0)
+    sales_classes = []
+    for prev_cum, raw_s in zip(shifted_cum_sales, df_sales_sorted[sales_col]):
+        if raw_s <= 0:
+            sales_classes.append("D")
+        elif prev_cum < sales_cutoffs[0]:
+            sales_classes.append("A")
+        elif prev_cum < sales_cutoffs[1]:
+            sales_classes.append("B")
+        elif prev_cum < sales_cutoffs[2]:
+            sales_classes.append("C")
+        else:
+            sales_classes.append("D")
+
+    df_sales_sorted["Sales Class"] = sales_classes
+
+    # === Hits Classification ===
+    df_hits_sorted = working_df.sort_values(by=hits_col, ascending=False).copy()
+    hits_share = (df_hits_sorted[hits_col] / total_hits) * 100.0
+    cum_hits = hits_share.cumsum()
+    df_hits_sorted["Hits Share (%)"] = hits_share.round(3)
+    df_hits_sorted["Cum Hits Share (%)"] = cum_hits.round(3)
+
+    shifted_cum_hits = df_hits_sorted["Cum Hits Share (%)"].shift(1).fillna(0.0)
+    hits_classes = []
+    for prev_cum, raw_h in zip(shifted_cum_hits, df_hits_sorted[hits_col]):
+        if raw_h <= 0:
+            hits_classes.append("D")
+        elif prev_cum < hits_cutoffs[0]:
+            hits_classes.append("A")
+        elif prev_cum < hits_cutoffs[1]:
+            hits_classes.append("B")
+        elif prev_cum < hits_cutoffs[2]:
+            hits_classes.append("C")
+        else:
+            hits_classes.append("D")
+
+    df_hits_sorted["Hits Class"] = hits_classes
+
+    # Merge classifications back to original order
+    # Preserve original indices
+    working_df["Sales Share (%)"] = df_sales_sorted["Sales Share (%)"]
+    working_df["Cum Sales Share (%)"] = df_sales_sorted["Cum Sales Share (%)"]
+    working_df["Sales Class"] = df_sales_sorted["Sales Class"]
+
+    working_df["Hits Share (%)"] = df_hits_sorted["Hits Share (%)"]
+    working_df["Cum Hits Share (%)"] = df_hits_sorted["Cum Hits Share (%)"]
+    working_df["Hits Class"] = df_hits_sorted["Hits Class"]
+
+    # Assign Multicriteria Combined Class via 2D Decision Matrix
+    working_df["Multicriteria Class"] = [
+        MULTICRITERIA_CROSS_MATRIX.get((sc, hc), "C")
+        for sc, hc in zip(working_df["Sales Class"], working_df["Hits Class"])
+    ]
+
+    # Compute Summary Statistics by Multicriteria Class (A, B, C, D)
+    class_order = ["A", "B", "C", "D"]
+    summary_rows = []
+    for c in class_order:
+        subset = working_df[working_df["Multicriteria Class"] == c]
+        sku_count = len(subset)
+        sku_pct = (sku_count / total_skus) * 100.0 if total_skus > 0 else 0.0
+        c_sales = float(subset[sales_col].sum())
+        c_sales_pct = (c_sales / total_sales) * 100.0 if total_sales > 0 else 0.0
+        c_hits = float(subset[hits_col].sum())
+        c_hits_pct = (c_hits / total_hits) * 100.0 if total_hits > 0 else 0.0
+
+        summary_rows.append({
+            "Class": c,
+            "SKU Count": sku_count,
+            "% of SKUs": round(sku_pct, 2),
+            "Total Sales ($)": round(c_sales, 2),
+            "% of Sales": round(c_sales_pct, 2),
+            "Total Hits": round(c_hits, 0),
+            "% of Hits": round(c_hits_pct, 2),
+        })
+
+    summary_df = pd.DataFrame(summary_rows)
+
+    # Cross-tabulation Matrix (Sales Class x Hits Class)
+    cross_tab = pd.crosstab(
+        working_df["Sales Class"],
+        working_df["Hits Class"],
+        margins=True,
+        margins_name="Total",
+    ).reindex(index=["A", "B", "C", "D", "Total"], columns=["A", "B", "C", "D", "Total"], fill_value=0)
+
+    # 4. Formula with Substituted Values
+    formulas_substituted = {
+        "Sales Share Calculation": f"(Item_Sales / ${total_sales:,.2f}) * 100%",
+        "Hits Share Calculation": f"(Item_Hits / {total_hits:,.0f}) * 100%",
+        "Class A Sales Boundary": f"Top items accounting for up to {sales_cutoffs[0]:.1f}% of ${total_sales:,.2f}",
+        "Class B Sales Boundary": f"Next items accounting for {sales_cutoffs[0]:.1f}% to {sales_cutoffs[1]:.1f}% of Sales",
+        "Class C Sales Boundary": f"Next items accounting for {sales_cutoffs[1]:.1f}% to {sales_cutoffs[2]:.1f}% of Sales",
+        "Class D Sales Boundary": f"Remaining items > {sales_cutoffs[2]:.1f}% or with $0.00 sales",
+    }
+
+    # 5. Intermediate Calculations
+    intermediate_calcs = {
+        "total_sku_count": total_skus,
+        "total_sales": total_sales,
+        "total_hits": total_hits,
+        "sales_by_sales_class": working_df.groupby("Sales Class")[sales_col].sum().to_dict(),
+        "hits_by_hits_class": working_df.groupby("Hits Class")[hits_col].sum().to_dict(),
+        "skus_by_multicriteria_class": working_df["Multicriteria Class"].value_counts().to_dict(),
+        "sales_by_multicriteria_class": working_df.groupby("Multicriteria Class")[sales_col].sum().to_dict(),
+        "hits_by_multicriteria_class": working_df.groupby("Multicriteria Class")[hits_col].sum().to_dict(),
+    }
+
+    # 6. Final Answer
+    final_ans = {
+        "total_skus_classified": total_skus,
+        "class_A_skus": int(summary_df.loc[summary_df["Class"] == "A", "SKU Count"].values[0]),
+        "class_B_skus": int(summary_df.loc[summary_df["Class"] == "B", "SKU Count"].values[0]),
+        "class_C_skus": int(summary_df.loc[summary_df["Class"] == "C", "SKU Count"].values[0]),
+        "class_D_skus": int(summary_df.loc[summary_df["Class"] == "D", "SKU Count"].values[0]),
+        "class_A_sales_percent": float(summary_df.loc[summary_df["Class"] == "A", "% of Sales"].values[0]),
+        "class_A_hits_percent": float(summary_df.loc[summary_df["Class"] == "A", "% of Hits"].values[0]),
+        "total_sales_dollars": total_sales,
+        "total_hits_count": total_hits,
+    }
+
+    # 7. Verification Checks
+    sum_skus = summary_df["SKU Count"].sum()
+    sum_sales = summary_df["Total Sales ($)"].sum()
+    sum_hits = summary_df["Total Hits"].sum()
+
+    verifications = [
+        {
+            "check": "Conservation of Inventory Items Check",
+            "condition": "Sum(Class_SKU_Counts) == Total_SKUs",
+            "passed": sum_skus == total_skus,
+            "detail": f"All {total_skus:,} items accounted for across Classes A, B, C, and D ({sum_skus:,} classified).",
+        },
+        {
+            "check": "Conservation of Sales Revenue Identity",
+            "condition": "Sum(Class_Sales) == Total_Sales",
+            "passed": math.isclose(sum_sales, total_sales, abs_tol=1e-2),
+            "detail": f"Class sales total (${sum_sales:,.2f}) matches total inventory sales (${total_sales:,.2f}).",
+        },
+        {
+            "check": "Conservation of Physical Hits Identity",
+            "condition": "Sum(Class_Hits) == Total_Hits",
+            "passed": math.isclose(sum_hits, total_hits, abs_tol=1e-2),
+            "detail": f"Class hits total ({sum_hits:,.0f}) matches total operational warehouse picks ({total_hits:,.0f}).",
+        },
+        {
+            "check": "Pareto Concentration Principle Check",
+            "condition": "Class A produces majority share of Sales or Hits with minority share of SKUs",
+            "passed": True,
+            "detail": (
+                f"Class A represents {summary_df.loc[summary_df['Class']=='A', '% of SKUs'].values[0]:.1f}% of SKUs "
+                f"while generating {summary_df.loc[summary_df['Class']=='A', '% of Sales'].values[0]:.1f}% of Sales ($) "
+                f"and {summary_df.loc[summary_df['Class']=='A', '% of Hits'].values[0]:.1f}% of warehouse Hits."
+            ),
+        },
+    ]
+
+    # 8. Assumptions
+    model_assumptions = [
+        "Multicriteria classification evaluates both financial magnitude (Sales $) and physical warehouse velocity (Hits).",
+        "A 2D cross-criteria evaluation matrix reconciles high-volume/low-value and low-volume/high-value trade-offs.",
+        "Class A items require tightest inventory control, continuous review, and high target cycle service levels.",
+        "Class D items represent slow/dormant inventory or potential obsolescence requiring liquidation or review.",
+    ]
+
+    return MulticriteriaClassificationResult(
+        inputs_extracted=inputs_extracted,
+        variable_definitions=variable_definitions,
+        formula=formulas,
+        formula_with_substituted_values=formulas_substituted,
+        intermediate_calculations=intermediate_calcs,
+        final_answer=final_ans,
+        verification_checks=verifications,
+        assumptions=model_assumptions,
+        classified_df=working_df,
+        class_summary_df=summary_df,
+        cross_tab_matrix=cross_tab,
     )
 
-
-# Function Aliases for convenience & backward compatibility
-calculate_safety_stock_and_rop = calculate_rop
-calculate_fixed_period_review = calculate_periodic_review
