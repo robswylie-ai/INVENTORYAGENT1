@@ -57,6 +57,7 @@ class InventoryDecisionAgent:
         "safety_stock_rop": "Safety Stock & Reorder Point (Continuous Review)",
         "fixed_period_review": "Fixed-Period Review (Periodic Review / Order-Up-To)",
         "newsvendor": "Newsvendor Model (Single-Period Stochastic)",
+        "inventory_classification": "Multicriteria Inventory Classification (Sales & Hits)",
     }
 
     def __init__(self):
@@ -79,6 +80,7 @@ class InventoryDecisionAgent:
             "fixed_period_review": 0,
             "safety_stock_rop": 0,
             "eoq": 0,
+            "inventory_classification": 0,
         }
 
         # 1. Newsvendor indicators
@@ -112,6 +114,12 @@ class InventoryDecisionAgent:
             scores["eoq"] += 5
         if ("demand" in text or "annual demand" in text) and ("order cost" in text or "setup cost" in text) and ("holding cost" in text or "carrying cost" in text):
             scores["eoq"] += 4
+
+        # 6. Inventory Classification indicators
+        if any(w in text for w in ["classification", "classify", "multicriteria", "multi-criteria", "abc", "pareto", "hits", "sales ($)", "inventory classification"]):
+            scores["inventory_classification"] += 7
+        if ("class" in text or "classes" in text) and ("a, b, c" in text or "sales" in text or "hits" in text or "matrix" in text):
+            scores["inventory_classification"] += 5
 
         # Disambiguation heuristics
         # If periodic review mentions review period and ROP, fixed period review takes priority
@@ -156,6 +164,8 @@ class InventoryDecisionAgent:
             inputs = self._extract_fixed_period_inputs(text)
         elif model == "newsvendor":
             inputs = self._extract_newsvendor_inputs(text)
+        elif model == "inventory_classification":
+            inputs = self._extract_classification_inputs(text)
 
         return inputs
 
@@ -407,6 +417,25 @@ class InventoryDecisionAgent:
             "shortage_penalty": float(shortage) if shortage else 0.0,
         }
 
+    def _extract_classification_inputs(self, text: str) -> Dict[str, Any]:
+        """
+        Extracts DataFrame input for multicriteria inventory classification.
+        Defaults to the bundled sample classification dataset if present.
+        """
+        import os
+        import pandas as pd
+        if os.path.exists("sample_inventory_classification.csv"):
+            df = pd.read_csv("sample_inventory_classification.csv")
+        else:
+            df = pd.DataFrame({
+                "Item Number": ["SKU-1001", "SKU-1002", "SKU-1003", "SKU-1004"],
+                "Item Name": ["Motor AC", "Drive VFD", "Sensor TS", "Obsolete Fuse"],
+                "UoM": ["EA", "EA", "EA", "EA"],
+                "Sales ($)": [125000.0, 35000.0, 8000.0, 0.0],
+                "Hits": [1400, 350, 80, 0],
+            })
+        return {"df": df}
+
     # ========================================================================
     # STAGE 3: SELECT TOOL
     # ========================================================================
@@ -420,6 +449,7 @@ class InventoryDecisionAgent:
             "safety_stock_rop": (tools.calculate_safety_stock_rop, "tools.calculate_safety_stock_rop"),
             "fixed_period_review": (tools.calculate_fixed_period_review, "tools.calculate_fixed_period_review"),
             "newsvendor": (tools.calculate_newsvendor, "tools.calculate_newsvendor"),
+            "inventory_classification": (tools.classify_inventory_multicriteria, "tools.classify_inventory_multicriteria"),
         }
         if model not in tool_map:
             raise ValueError(f"Unknown inventory model '{model}'.")
@@ -447,6 +477,7 @@ class InventoryDecisionAgent:
             "safety_stock_rop": tools.verify_safety_stock_result,
             "fixed_period_review": tools.verify_fixed_period_result,
             "newsvendor": tools.verify_newsvendor_result,
+            "inventory_classification": tools.verify_classification_result,
         }
         verifier = verifier_map.get(model)
         if verifier:

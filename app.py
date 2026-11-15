@@ -176,6 +176,13 @@ def run_streamlit_app():
             "to a salvage value of $30. Customer demand is normally distributed with a mean of 450 units and standard deviation of 75 units. "
             "How many jackets should we stock under the newsvendor model to maximize expected profit?"
         ),
+        "6. Multicriteria Inventory Classification (CSV Upload)": (
+            "Conduct multicriteria inventory stratification using two criteria: Sales and POS Hits. "
+            "Step 1: Classify Sales and POS Hits separately using Pareto thresholds (A: 0-60%, B: 61-80%, C: 81-90%, D: 91-100%) and numerical scores (A=4, B=3, C=2, D=1). "
+            "Step 2: Calculate Combined Weighted Score = 0.65(Sales Score) + 0.35(Hits Score). "
+            "Step 3: Assign Final Inventory Class: A (4.00-3.25), B (3.24-2.50), C (2.49-1.75), D (< 1.75). "
+            "Report the number of items in each final category (A, B, C, D) and summarize the total Sales for each category."
+        ),
     }
 
     # Sidebar
@@ -192,6 +199,7 @@ def run_streamlit_app():
         3. **Safety Stock & ROP:** Continuous review $(s, Q)$ with lead-time volatility.
         4. **Fixed-Period Review:** Periodic review $(R, S)$ base stock replenishment.
         5. **Newsvendor Model:** Critical fractile single-period profit optimization.
+        6. **Inventory Classification:** Multicriteria ABC/D classification by Sales ($) and Hits via CSV upload.
         """
     )
 
@@ -201,11 +209,32 @@ def run_streamlit_app():
     uploaded_file = st.sidebar.file_uploader("Upload CSV File", type=["csv"])
 
     # DATA PROCESSING & ANALYSIS SECTION (Main Page)
+    # Determine data source: uploaded CSV file takes priority; if none uploaded and preset 6 is chosen, use preset sample CSV
+    df = None
+    data_source_mode = None
+
     if uploaded_file is not None:
-        st.markdown("---")
         try:
-            # 1. Read CSV into pandas DataFrame
             df = pd.read_csv(uploaded_file)
+            data_source_mode = f"Uploaded File: `{uploaded_file.name}`"
+        except Exception as e:
+            st.error(f"Error reading uploaded CSV file: {str(e)}")
+    elif "Inventory Classification" in selected_preset:
+        try:
+            df = pd.read_csv("sample_inventory_classification.csv")
+            data_source_mode = "Preset Scenario Dataset (`sample_inventory_classification.csv`)"
+            st.sidebar.info("💡 Preset sample file loaded (`sample_inventory_classification.csv`). You can also upload your own CSV file above.")
+        except Exception:
+            df = None
+
+    if df is not None:
+        st.markdown("---")
+        if data_source_mode and "Preset" in data_source_mode:
+            st.info(
+                f"📊 **Preset Scenario Active:** Currently displaying multicriteria inventory classification for **{data_source_mode}**. "
+                f"To classify your own inventory dataset, upload a CSV file in the **📁 Data Upload** section in the left sidebar."
+            )
+        try:
 
             num_rows, num_cols = df.shape
             col_names = df.columns.tolist()
@@ -235,10 +264,19 @@ def run_streamlit_app():
             # CAPABILITY 1: MULTICRITERIA INVENTORY CLASSIFICATION (A, B, C, D)
             # ================================================================
             if has_classification_cols:
-                st.subheader("🏷️ Multicriteria Inventory Classification (Sales & Hits)")
-                st.caption(
-                    "Classifies inventory items into **A, B, C, and D** classes based on joint "
-                    "financial volume (`Sales ($)`) and operational pick velocity (`Hits`)."
+                st.subheader("🏷️ Multicriteria Inventory Stratification (Sales & POS Hits)")
+                st.markdown(
+                    """
+                    **Multicriteria Inventory Stratification Methodology:**
+                    - **Step 1 - Classify Sales and POS Hits Separately:**
+                      - Pareto thresholds: **A (0-60%)**, **B (61-80%)**, **C (81-90%)**, **D (91-100%)**.
+                      - Score conversion: **A = 4, B = 3, C = 2, D = 1**.
+                    - **Step 2 - Combined Weighted Score:**
+                      - Weights: **65% Sales** and **35% POS Hits**.
+                      - Formula: `Combined Weighted Score = 0.65(Sales Score) + 0.35(Hits Score)`.
+                    - **Step 3 - Final Inventory Class:**
+                      - **A:** 4.00 - 3.25 | **B:** 3.24 - 2.50 | **C:** 2.49 - 1.75 | **D:** < 1.75.
+                    """
                 )
 
                 # Execute classification via deterministic tools
@@ -247,51 +285,61 @@ def run_streamlit_app():
                 summary_df = class_res.class_summary_df
                 cross_tab = class_res.cross_tab_matrix
 
-                # Summary KPIs
+                # REQUIRED CLASSIFICATION SUMMARY (KPIs)
+                st.markdown("#### 📋 Required Classification Summary")
                 kcol1, kcol2, kcol3, kcol4, kcol5 = st.columns(5)
                 with kcol1:
-                    st.metric("Total Items (SKUs)", f"{len(enriched_df):,}")
+                    st.metric("Total Items", f"{len(enriched_df):,}")
                 with kcol2:
-                    st.metric("Class A SKUs", f"{class_res.final_answer['class_A_skus']:,}", f"{class_res.final_answer['class_A_sales_percent']:.1f}% Sales")
+                    st.metric("Category A Items", f"{class_res.final_answer['class_A_items']:,}", f"${class_res.final_answer['class_A_total_sales']:,.2f} Sales")
                 with kcol3:
-                    st.metric("Class B SKUs", f"{class_res.final_answer['class_B_skus']:,}")
+                    st.metric("Category B Items", f"{class_res.final_answer['class_B_items']:,}", f"${class_res.final_answer['class_B_total_sales']:,.2f} Sales")
                 with kcol4:
-                    st.metric("Class C SKUs", f"{class_res.final_answer['class_C_skus']:,}")
+                    st.metric("Category C Items", f"{class_res.final_answer['class_C_items']:,}", f"${class_res.final_answer['class_C_total_sales']:,.2f} Sales")
                 with kcol5:
-                    st.metric("Class D (Dead/Dormant)", f"{class_res.final_answer['class_D_skus']:,}")
+                    st.metric("Category D Items", f"{class_res.final_answer['class_D_items']:,}", f"${class_res.final_answer['class_D_total_sales']:,.2f} Sales")
 
-                # Class Breakdown Table & Cross-Tabulation Matrix
+                # Summary Table & 2D Stratification Matrix
                 ccol1, ccol2 = st.columns([3, 2])
                 with ccol1:
-                    st.markdown("#### Multicriteria Class Distribution")
+                    st.markdown("##### Stratification Summary Table")
+                    display_summary_cols = [
+                        "Final Inventory Class",
+                        "Number of Items",
+                        "Total Sales ($)",
+                        "% of Items",
+                        "% of Sales",
+                        "Combined Score Range",
+                        "Avg Weighted Score",
+                    ]
                     st.dataframe(
-                        summary_df.style.format({
-                            "SKU Count": "{:,}",
-                            "% of SKUs": "{:.1f}%",
+                        summary_df[display_summary_cols].style.format({
+                            "Number of Items": "{:,}",
                             "Total Sales ($)": "${:,.2f}",
+                            "% of Items": "{:.1f}%",
                             "% of Sales": "{:.1f}%",
-                            "Total Hits": "{:,.0f}",
-                            "% of Hits": "{:.1f}%",
+                            "Avg Weighted Score": "{:.2f}",
                         }),
                         use_container_width=True,
                         hide_index=True,
                     )
 
                 with ccol2:
-                    st.markdown("#### 2D Criteria Decision Matrix (Sales × Hits)")
+                    st.markdown("##### 2D Stratification Cross-Tabulation Matrix")
+                    st.caption("Sales Class (65%) × POS Hits Class (35%) item counts:")
                     st.dataframe(cross_tab, use_container_width=True)
 
                 # Class Filter and Display Enriched DataFrame
-                st.markdown("#### Classified Inventory Dataset")
+                st.markdown("#### Stratified Inventory Dataset (with Calculated Scores)")
                 filter_class = st.radio(
-                    "Filter by Multicriteria Class:",
+                    "Filter by Final Inventory Class:",
                     ["All Items", "Class A", "Class B", "Class C", "Class D"],
                     horizontal=True,
                 )
 
                 if filter_class != "All Items":
                     target_c = filter_class.split(" ")[-1]
-                    display_class_df = enriched_df[enriched_df["Multicriteria Class"] == target_c].copy()
+                    display_class_df = enriched_df[enriched_df["Final Inventory Class"] == target_c].copy()
                 else:
                     display_class_df = enriched_df.copy()
 
@@ -306,6 +354,7 @@ def run_streamlit_app():
                     "Cum Sales Share (%)": "{:.2f}%",
                     "Hits Share (%)": "{:.2f}%",
                     "Cum Hits Share (%)": "{:.2f}%",
+                    "Combined Weighted Score": "{:.2f}",
                 }
                 # Add any existing portfolio currency columns if present
                 if "Unit Cost" in display_class_df.columns:
@@ -536,12 +585,20 @@ def run_streamlit_app():
                 st.line_chart(chart_df)
                 st.caption(f"Normal Demand Distribution: Optimal Order Q* = {q_opt:.0f} (Critical Ratio = {res.critical_ratio:.1%}).")
 
+            elif model == "inventory_classification" and trace.calculation_result:
+                res: tools.MulticriteriaClassificationResult = trace.calculation_result
+                summary_df = res.class_summary_df
+                st.bar_chart(summary_df.set_index("Class")[["% of SKUs", "% of Sales", "% of Hits"]])
+                st.caption("Multicriteria Distribution: Comparison of SKU Count %, Sales Volume %, and Pick Hits % across Classes A, B, C, D.")
+
         # TAB 4: What-If Sensitivity
         with tab_sensitivity:
             st.markdown("#### Interactive What-If Parameter Tuning")
             model = trace.identified_model
 
-            if model == "eoq":
+            if model == "inventory_classification":
+                st.info("Multicriteria classification evaluates your uploaded dataset across Pareto sales revenue and warehouse pick velocity criteria. Adjust raw data values in your CSV to evaluate changes.")
+            elif model == "eoq":
                 col_s1, col_s2, col_s3 = st.columns(3)
                 with col_s1:
                     adj_d = st.number_input("Annual Demand (D)", value=float(trace.extracted_inputs.get("annual_demand", 10000.0)), step=500.0)
