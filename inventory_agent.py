@@ -979,6 +979,18 @@ class InventoryDecisionAgent:
                 is_opt = "★ **OPTIMAL**" if t.tier_index == result.optimal_tier_index else "Feasible"
                 sec6 += f"| {t.tier_index + 1} | {t.min_qty:.0f}-{max_str} | ${t.unit_price:.2f} | {t.feasible_quantity:,.0f} | ${t.annual_purchasing_cost:,.2f} | ${t.annual_ordering_cost:,.2f} | ${t.annual_holding_cost:,.2f} | **${t.total_annual_cost:,.2f}** | {is_opt} |\n"
 
+            best_t = result.tier_evaluations[result.optimal_tier_index]
+            order_spend = best_t.feasible_quantity * best_t.unit_price
+            savings = result.tier_evaluations[0].total_annual_cost - best_t.total_annual_cost
+
+            sec6 += "\n\n### 🏆 Quantity Discount Optimal Recommendation\n\n"
+            sec6 += f"- **Best Order Quantity ($Q^*$):** **{result.optimal_order_quantity:,.0f} units** (qualifies for Tier {result.optimal_tier_index + 1} pricing at **${best_t.unit_price:.2f}** per unit)\n"
+            sec6 += f"- **Annual Purchasing Spend:** **${best_t.annual_purchasing_cost:,.2f}** (`Annual Demand {result.annual_demand:,.0f} units × ${best_t.unit_price:.2f}/unit`)\n"
+            sec6 += f"- **Total Annual Spend (Landed Cost):** **${result.minimum_total_annual_cost:,.2f}** (Purchasing: ${best_t.annual_purchasing_cost:,.2f} + Ordering: ${best_t.annual_ordering_cost:,.2f} + Holding: ${best_t.annual_holding_cost:,.2f})\n"
+            sec6 += f"- **Spend per Replenishment Order:** **${order_spend:,.2f}** (`Order Quantity {result.optimal_order_quantity:,.0f} units × ${best_t.unit_price:.2f}/unit`)\n"
+            if savings > 0:
+                sec6 += f"- **Annual Spend Savings vs Base Tier 1:** **${savings:,.2f}** per year\n"
+
         # 7. Verification Checks
         sec7 = "\n#### 7. Verification Checks\n"
         if hasattr(result, "verification_checks"):

@@ -436,6 +436,22 @@ class QuantityDiscountResult:
         return self.tier_evaluations[self.optimal_tier_index].annual_holding_cost
 
     @property
+    def best_order_quantity(self) -> float:
+        return self.optimal_order_quantity
+
+    @property
+    def annual_purchasing_spend(self) -> float:
+        return self.annual_purchasing_cost
+
+    @property
+    def total_annual_spend(self) -> float:
+        return self.minimum_total_annual_cost
+
+    @property
+    def spend_per_order(self) -> float:
+        return round(self.optimal_order_quantity * self.optimal_unit_price, 2)
+
+    @property
     def summary_message(self) -> str:
         return (
             f"Recommended: Order {self.optimal_order_quantity:,.0f} units at ${self.optimal_unit_price:.2f}/unit "
@@ -528,6 +544,8 @@ def calculate_quantity_discount(
         "Feasibility Condition": "If EOQ_j < min_qty_j: Q_j = min_qty_j; Else if EOQ_j in bracket: Q_j = EOQ_j; Else Q_j = max_qty_j",
         "Total Annual Cost (TC_j)": "TC_j = (D * P_j) + ((D / Q_j) * S) + ((Q_j / 2) * H_j)",
         "Optimal Decision": "j* = argmin_j(TC_j),  Q* = Q_{j*}",
+        "Annual Purchasing Spend": "Purchasing Spend = D * P_j*",
+        "Total Annual Spend (Landed Cost)": "Total Annual Spend = Purchasing Spend + Annual Ordering Cost + Annual Holding Cost",
     }
 
     # Evaluate each tier
@@ -592,10 +610,29 @@ def calculate_quantity_discount(
     opt_cycle_days = (best_tier.feasible_quantity / d) * 250.0
     opt_cycle_work_wks = opt_cycle_days / 5.0
     opt_cycle_cal_wks = opt_cycle_days / 7.0
+    order_spend_val = round(best_tier.feasible_quantity * best_tier.unit_price, 2)
+    cost_savings_val = round(tier_details[0].total_annual_cost - best_tier.total_annual_cost, 2)
+
+    formulas_substituted["Optimal Decision"] = (
+        f"Tier {best_tier.tier_index + 1} achieves global minimum cost: "
+        f"Best Order Quantity Q* = {best_tier.feasible_quantity:,.0f} units @ ${best_tier.unit_price:.2f}/unit"
+    )
+    formulas_substituted["Annual Purchasing Spend"] = (
+        f"{d:,.0f} units * ${best_tier.unit_price:.2f}/unit = ${best_tier.annual_purchasing_cost:,.2f}"
+    )
+    formulas_substituted["Total Annual Spend (Landed Cost)"] = (
+        f"${best_tier.annual_purchasing_cost:,.2f} (Purchasing) + ${best_tier.annual_ordering_cost:,.2f} (Ordering) + "
+        f"${best_tier.annual_holding_cost:,.2f} (Holding) = ${best_tier.total_annual_cost:,.2f}"
+    )
 
     # 5. Intermediate Calculations
     intermediate_calcs = {
         "step_0_demand_period_conversion": kwargs.get("demand_period_conversion", "Direct annual demand (no conversion needed)"),
+        "best_order_quantity": best_tier.feasible_quantity,
+        "best_order_quantity_units": f"{best_tier.feasible_quantity:,.0f} units per replenishment order",
+        "annual_purchasing_spend": best_tier.annual_purchasing_cost,
+        "total_annual_spend": best_tier.total_annual_cost,
+        "spend_per_order": order_spend_val,
         "holding_cost_type": holding_type,
         "holding_rate_or_fixed": h_param,
         "evaluated_tier_details": [asdict(t) for t in tier_details],
@@ -604,16 +641,22 @@ def calculate_quantity_discount(
         "optimal_tier_cycle_days": round(opt_cycle_days, 2),
         "optimal_tier_cycle_work_weeks": f"{opt_cycle_work_wks:.2f} work weeks ({opt_cycle_days:.1f} operating days @ 5 days/week)",
         "optimal_tier_cycle_calendar_weeks": f"{opt_cycle_cal_wks:.2f} calendar weeks ({opt_cycle_days:.1f} calendar days @ 7 days/week)",
-        "savings_vs_base_tier": round(tier_details[0].total_annual_cost - best_tier.total_annual_cost, 2),
-        "cost_savings_vs_base_tier": round(tier_details[0].total_annual_cost - best_tier.total_annual_cost, 2),
+        "savings_vs_base_tier": cost_savings_val,
+        "cost_savings_vs_base_tier": cost_savings_val,
     }
 
     # 6. Final Answer
     final_ans = {
+        "best_order_quantity": best_tier.feasible_quantity,
+        "best_order_quantity_units": f"{best_tier.feasible_quantity:,.0f} units per replenishment order",
+        "optimal_order_quantity": best_tier.feasible_quantity,
         "optimal_tier_index": best_tier.tier_index,
         "optimal_tier_label": f"Tier {best_tier.tier_index + 1}",
-        "optimal_order_quantity": best_tier.feasible_quantity,
         "optimal_unit_price": best_tier.unit_price,
+        "annual_purchasing_spend": best_tier.annual_purchasing_cost,
+        "total_annual_spend": best_tier.total_annual_cost,
+        "spend_per_order": order_spend_val,
+        "annual_cost_savings_vs_base": cost_savings_val,
         "order_cycle_time": f"{opt_cycle_days:.1f} operating days ({opt_cycle_work_wks:.2f} work weeks @ 5 days/wk / {opt_cycle_cal_wks:.2f} calendar weeks @ 7 days/wk)",
         "minimum_total_annual_cost": best_tier.total_annual_cost,
         "annual_purchasing_cost": best_tier.annual_purchasing_cost,

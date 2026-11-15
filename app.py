@@ -582,6 +582,14 @@ def run_streamlit_app():
 
             elif model == "quantity_discount" and trace.calculation_result:
                 res: tools.QuantityDiscountResult = trace.calculation_result
+                col_qd1, col_qd2, col_qd3 = st.columns(3)
+                with col_qd1:
+                    st.metric("Best Order Quantity (Q*)", f"{res.optimal_order_quantity:,.0f} units", f"Tier {res.optimal_tier_index + 1}")
+                with col_qd2:
+                    st.metric("Annual Purchasing Spend", f"${res.annual_purchasing_cost:,.2f}", f"${res.optimal_unit_price:.2f} / unit")
+                with col_qd3:
+                    st.metric("Total Annual Spend (Landed)", f"${res.minimum_total_annual_cost:,.2f}")
+
                 tier_data = []
                 for t in res.tier_evaluations:
                     tier_data.append({
